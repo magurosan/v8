@@ -27,6 +27,22 @@
 
 // Flags: --allow-natives-syntax
 
+function runTest(fn) {
+  // The first run creates an copy directly from the boilerplate decsription.
+  fn();
+  // The second run will create the boilerplate.
+  fn();
+  // The third run might copy literals directly in the stub.
+  fn();
+  // Several invocations more to trigger map deprecations.
+  fn();
+  fn();
+  fn();
+  // Make sure literals keep on workin in optimized code.
+  %OptimizeFunctionOnNextCall(fn);
+  fn();
+}
+
 function testBasicPrototype() {
   var obj = {
       a: 7,
@@ -292,25 +308,25 @@ TestDictionaryElements();
 
 function TestLiteralElementsKind() {
   let o = {0:0, 1:1, 2:2};
-  assertTrue(%HasFastObjectElements(o));
-  assertTrue(%HasFastHoleyElements(o));
+  assertTrue(%HasObjectElements(o));
+  assertTrue(%HasHoleyElements(o));
   o = {0:0, 2:2};
-  assertTrue(%HasFastObjectElements(o));
-  assertTrue(%HasFastHoleyElements(o));
+  assertTrue(%HasObjectElements(o));
+  assertTrue(%HasHoleyElements(o));
 
   o = {0:0.1, 1:1, 2:2};
-  assertTrue(%HasFastObjectElements(o));
-  assertTrue(%HasFastHoleyElements(o));
+  assertTrue(%HasObjectElements(o));
+  assertTrue(%HasHoleyElements(o));
   o = {0:0.1, 2:2};
-  assertTrue(%HasFastObjectElements(o));
-  assertTrue(%HasFastHoleyElements(o));
+  assertTrue(%HasObjectElements(o));
+  assertTrue(%HasHoleyElements(o));
 
   o = {0:0.1, 1:1, 2:true};
-  assertTrue(%HasFastObjectElements(o));
-  assertTrue(%HasFastHoleyElements(o));
+  assertTrue(%HasObjectElements(o));
+  assertTrue(%HasHoleyElements(o));
   o = {0:0.1, 2:true};
-  assertTrue(%HasFastObjectElements(o));
-  assertTrue(%HasFastHoleyElements(o));
+  assertTrue(%HasObjectElements(o));
+  assertTrue(%HasHoleyElements(o));
 
   assertTrue(%HasDictionaryElements({0xFFFFFF:true}));
 }
@@ -318,7 +334,6 @@ TestLiteralElementsKind();
 TestLiteralElementsKind();
 %OptimizeFunctionOnNextCall(TestLiteralElementsKind);
 TestLiteralElementsKind();
-
 
 function TestNonNumberElementValues() {
   var o = {

@@ -70,8 +70,8 @@ namespace interpreter {
     OperandType::kIdx, OperandType::kIdx, OperandType::kUImm)                  \
   V(LdaLookupGlobalSlotInsideTypeof, AccumulatorUse::kWrite,                   \
     OperandType::kIdx, OperandType::kIdx, OperandType::kUImm)                  \
-  V(StaLookupSlotSloppy, AccumulatorUse::kReadWrite, OperandType::kIdx)        \
-  V(StaLookupSlotStrict, AccumulatorUse::kReadWrite, OperandType::kIdx)        \
+  V(StaLookupSlot, AccumulatorUse::kReadWrite, OperandType::kIdx,              \
+    OperandType::kFlag8)                                                       \
                                                                                \
   /* Register-accumulator transfers */                                         \
   V(Ldar, AccumulatorUse::kWrite, OperandType::kReg)                           \
@@ -178,8 +178,6 @@ namespace interpreter {
   V(CallUndefinedReceiver2, AccumulatorUse::kWrite, OperandType::kReg,         \
     OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
   V(CallWithSpread, AccumulatorUse::kWrite, OperandType::kReg,                 \
-    OperandType::kRegList, OperandType::kRegCount)                             \
-  V(TailCall, AccumulatorUse::kWrite, OperandType::kReg,                       \
     OperandType::kRegList, OperandType::kRegCount, OperandType::kIdx)          \
   V(CallRuntime, AccumulatorUse::kWrite, OperandType::kRuntimeId,              \
     OperandType::kRegList, OperandType::kRegCount)                             \
@@ -196,7 +194,7 @@ namespace interpreter {
   V(Construct, AccumulatorUse::kReadWrite, OperandType::kReg,                  \
     OperandType::kRegList, OperandType::kRegCount, OperandType::kIdx)          \
   V(ConstructWithSpread, AccumulatorUse::kReadWrite, OperandType::kReg,        \
-    OperandType::kRegList, OperandType::kRegCount)                             \
+    OperandType::kRegList, OperandType::kRegCount, OperandType::kIdx)          \
                                                                                \
   /* Test Operators */                                                         \
   V(TestEqual, AccumulatorUse::kReadWrite, OperandType::kReg,                  \
@@ -224,17 +222,12 @@ namespace interpreter {
   V(ToNumber, AccumulatorUse::kRead, OperandType::kRegOut, OperandType::kIdx)  \
   V(ToObject, AccumulatorUse::kRead, OperandType::kRegOut)                     \
                                                                                \
-  /* String concatenation */                                                   \
-  V(ToPrimitiveToString, AccumulatorUse::kRead, OperandType::kRegOut,          \
-    OperandType::kIdx)                                                         \
-  V(StringConcat, AccumulatorUse::kWrite, OperandType::kRegList,               \
-    OperandType::kRegCount)                                                    \
-                                                                               \
   /* Literals */                                                               \
   V(CreateRegExpLiteral, AccumulatorUse::kWrite, OperandType::kIdx,            \
     OperandType::kIdx, OperandType::kFlag8)                                    \
   V(CreateArrayLiteral, AccumulatorUse::kWrite, OperandType::kIdx,             \
     OperandType::kIdx, OperandType::kFlag8)                                    \
+  V(CreateEmptyArrayLiteral, AccumulatorUse::kWrite, OperandType::kIdx)        \
   V(CreateObjectLiteral, AccumulatorUse::kNone, OperandType::kIdx,             \
     OperandType::kIdx, OperandType::kFlag8, OperandType::kRegOut)              \
                                                                                \
@@ -317,8 +310,8 @@ namespace interpreter {
                                                                                \
   /* Generators */                                                             \
   V(RestoreGeneratorState, AccumulatorUse::kWrite, OperandType::kReg)          \
-  V(SuspendGenerator, AccumulatorUse::kRead, OperandType::kReg,                \
-    OperandType::kRegList, OperandType::kRegCount, OperandType::kFlag8)        \
+  V(SuspendGenerator, AccumulatorUse::kNone, OperandType::kReg,                \
+    OperandType::kRegList, OperandType::kRegCount, OperandType::kUImm)         \
   V(RestoreGeneratorRegisters, AccumulatorUse::kNone, OperandType::kReg,       \
     OperandType::kRegOutList, OperandType::kRegCount)                          \
                                                                                \
@@ -345,11 +338,7 @@ namespace interpreter {
   V(IncBlockCounter, AccumulatorUse::kNone, OperandType::kIdx)                 \
                                                                                \
   /* Illegal bytecode (terminates execution) */                                \
-  V(Illegal, AccumulatorUse::kNone)                                            \
-                                                                               \
-  /* No operation (used to maintain source positions for peephole */           \
-  /* eliminated bytecodes). */                                                 \
-  V(Nop, AccumulatorUse::kNone)
+  V(Illegal, AccumulatorUse::kNone)
 
 // List of debug break bytecodes.
 #define DEBUG_BREAK_PLAIN_BYTECODE_LIST(V) \
@@ -634,7 +623,7 @@ class V8_EXPORT_PRIVATE Bytecodes final {
   static constexpr bool IsWithoutExternalSideEffects(Bytecode bytecode) {
     return (IsAccumulatorLoadWithoutEffects(bytecode) ||
             IsRegisterLoadWithoutEffects(bytecode) ||
-            IsCompareWithoutEffects(bytecode) || bytecode == Bytecode::kNop ||
+            IsCompareWithoutEffects(bytecode) ||
             IsJumpWithoutEffects(bytecode) || IsSwitch(bytecode));
   }
 
@@ -654,7 +643,6 @@ class V8_EXPORT_PRIVATE Bytecodes final {
            bytecode == Bytecode::kCallUndefinedReceiver0 ||
            bytecode == Bytecode::kCallUndefinedReceiver1 ||
            bytecode == Bytecode::kCallUndefinedReceiver2 ||
-           bytecode == Bytecode::kTailCall ||
            bytecode == Bytecode::kConstruct ||
            bytecode == Bytecode::kCallWithSpread ||
            bytecode == Bytecode::kConstructWithSpread ||
@@ -783,7 +771,6 @@ class V8_EXPORT_PRIVATE Bytecodes final {
       case Bytecode::kCallUndefinedReceiver2:
         return ConvertReceiverMode::kNullOrUndefined;
       case Bytecode::kCallAnyReceiver:
-      case Bytecode::kTailCall:
       case Bytecode::kConstruct:
       case Bytecode::kCallWithSpread:
       case Bytecode::kConstructWithSpread:
@@ -834,8 +821,17 @@ class V8_EXPORT_PRIVATE Bytecodes final {
     UNREACHABLE();
   }
 
-  // Returns the size of |operand| for |operand_scale|.
-  static OperandSize SizeOfOperand(OperandType operand, OperandScale scale);
+  // Returns the size of |operand_type| for |operand_scale|.
+  static OperandSize SizeOfOperand(OperandType operand_type,
+                                   OperandScale operand_scale) {
+    DCHECK_LE(operand_type, OperandType::kLast);
+    DCHECK_GE(operand_scale, OperandScale::kSingle);
+    DCHECK_LE(operand_scale, OperandScale::kLast);
+    STATIC_ASSERT(static_cast<int>(OperandScale::kQuadruple) == 4 &&
+                  OperandScale::kLast == OperandScale::kQuadruple);
+    int scale_index = static_cast<int>(operand_scale) >> 1;
+    return kOperandKindSizes[static_cast<size_t>(operand_type)][scale_index];
+  }
 
   // Returns true if |operand_type| is a runtime-id operand (kRuntimeId).
   static bool IsRuntimeIdOperandType(OperandType operand_type);
@@ -891,6 +887,7 @@ class V8_EXPORT_PRIVATE Bytecodes final {
   static const bool kIsScalable[];
   static const int kBytecodeSizes[][3];
   static const OperandSize* const kOperandSizes[][3];
+  static OperandSize const kOperandKindSizes[][3];
 };
 
 V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,

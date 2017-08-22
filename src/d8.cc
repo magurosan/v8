@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+/// Copyright 2012 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -157,7 +157,7 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
   }
 #if USE_VM
   void* VirtualMemoryAllocate(size_t length) {
-    void* data = base::VirtualMemory::ReserveRegion(length);
+    void* data = base::VirtualMemory::ReserveRegion(length, nullptr);
     if (data && !base::VirtualMemory::CommitRegion(data, length, false)) {
       base::VirtualMemory::ReleaseRegion(data, length);
       return nullptr;
@@ -227,6 +227,10 @@ class PredictablePlatform : public Platform {
 
   double MonotonicallyIncreasingTime() override {
     return synthetic_time_in_sec_ += 0.00001;
+  }
+
+  v8::TracingController* GetTracingController() override {
+    return platform_->GetTracingController();
   }
 
   Platform* platform() const { return platform_.get(); }
@@ -773,27 +777,36 @@ namespace {
 struct DynamicImportData {
   DynamicImportData(Isolate* isolate_, Local<String> referrer_,
                     Local<String> specifier_,
-                    Local<DynamicImportResult> result_)
+                    Local<Promise::Resolver> resolver_)
       : isolate(isolate_) {
     referrer.Reset(isolate, referrer_);
     specifier.Reset(isolate, specifier_);
-    result.Reset(isolate, result_);
+    resolver.Reset(isolate, resolver_);
   }
 
   Isolate* isolate;
   Global<String> referrer;
   Global<String> specifier;
-  Global<DynamicImportResult> result;
+  Global<Promise::Resolver> resolver;
 };
 
 }  // namespace
-void Shell::HostImportModuleDynamically(Isolate* isolate,
-                                        Local<String> referrer,
-                                        Local<String> specifier,
-                                        Local<DynamicImportResult> result) {
-  DynamicImportData* data =
-      new DynamicImportData(isolate, referrer, specifier, result);
-  isolate->EnqueueMicrotask(Shell::DoHostImportModuleDynamically, data);
+
+MaybeLocal<Promise> Shell::HostImportModuleDynamically(
+    Local<Context> context, Local<String> referrer, Local<String> specifier) {
+  Isolate* isolate = context->GetIsolate();
+
+  MaybeLocal<Promise::Resolver> maybe_resolver =
+      Promise::Resolver::New(context);
+  Local<Promise::Resolver> resolver;
+  if (maybe_resolver.ToLocal(&resolver)) {
+    DynamicImportData* data =
+        new DynamicImportData(isolate, referrer, specifier, resolver);
+    isolate->EnqueueMicrotask(Shell::DoHostImportModuleDynamically, data);
+    return resolver->GetPromise();
+  }
+
+  return MaybeLocal<Promise>();
 }
 
 void Shell::DoHostImportModuleDynamically(void* import_data) {
@@ -804,7 +817,7 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
 
   Local<String> referrer(import_data_->referrer.Get(isolate));
   Local<String> specifier(import_data_->specifier.Get(isolate));
-  Local<DynamicImportResult> result(import_data_->result.Get(isolate));
+  Local<Promise::Resolver> resolver(import_data_->resolver.Get(isolate));
 
   PerIsolateData* data = PerIsolateData::Get(isolate);
   Local<Context> realm = data->realms_[data->realm_current_].Get(isolate);
@@ -812,9 +825,11 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
 
   std::string source_url = ToSTLString(referrer);
   std::string dir_name =
-      IsAbsolutePath(source_url) ? DirName(source_url) : GetWorkingDirectory();
+      DirName(IsAbsolutePath(source_url)
+                  ? source_url
+                  : NormalizePath(source_url, GetWorkingDirectory()));
   std::string file_name = ToSTLString(specifier);
-  std::string absolute_path = NormalizePath(file_name.c_str(), dir_name);
+  std::string absolute_path = NormalizePath(file_name, dir_name);
 
   TryCatch try_catch(isolate);
   try_catch.SetVerbose(true);
@@ -826,8 +841,7 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
     root_module = module_it->second.Get(isolate);
   } else if (!FetchModuleTree(realm, absolute_path).ToLocal(&root_module)) {
     CHECK(try_catch.HasCaught());
-    CHECK(result->FinishDynamicImportFailure(realm, try_catch.Exception())
-              .FromJust());
+    resolver->Reject(realm, try_catch.Exception()).ToChecked();
     return;
   }
 
@@ -841,13 +855,13 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
   Local<Value> module;
   if (!maybe_result.ToLocal(&module)) {
     DCHECK(try_catch.HasCaught());
-    CHECK(result->FinishDynamicImportFailure(realm, try_catch.Exception())
-              .FromJust());
+    resolver->Reject(realm, try_catch.Exception()).ToChecked();
     return;
   }
 
   DCHECK(!try_catch.HasCaught());
-  CHECK(result->FinishDynamicImportSuccess(realm, root_module).FromJust());
+  Local<Value> module_namespace = root_module->GetModuleNamespace();
+  resolver->Resolve(realm, module_namespace).ToChecked();
 }
 
 bool Shell::ExecuteModule(Isolate* isolate, const char* file_name) {
@@ -1422,10 +1436,11 @@ void Shell::ReportException(Isolate* isolate, v8::TryCatch* try_catch) {
     // print the exception.
     printf("%s\n", exception_string);
   } else if (message->GetScriptOrigin().Options().IsWasm()) {
-    // Print <WASM>[(function index)]((function name))+(offset): (message).
+    // Print wasm-function[(function index)]:(offset): (message).
     int function_index = message->GetLineNumber(context).FromJust() - 1;
     int offset = message->GetStartColumn(context).FromJust();
-    printf("<WASM>[%d]+%d: %s\n", function_index, offset, exception_string);
+    printf("wasm-function[%d]:%d: %s\n", function_index, offset,
+           exception_string);
   } else {
     // Print (filename):(line number): (message).
     v8::String::Utf8Value filename(message->GetScriptOrigin().ResourceName());
@@ -1932,7 +1947,7 @@ void Shell::WriteLcovData(v8::Isolate* isolate, const char* file) {
       for (size_t k = 0; k < function_data.BlockCount(); k++) {
         debug::Coverage::BlockData block_data = function_data.GetBlockData(k);
         int start_line = LineFromOffset(script, block_data.StartOffset());
-        int end_line = LineFromOffset(script, block_data.EndOffset());
+        int end_line = LineFromOffset(script, block_data.EndOffset() - 1);
         uint32_t count = block_data.Count();
         WriteLcovDataForRange(lines, start_line, end_line, count);
       }
@@ -2702,6 +2717,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
     } else if (strcmp(argv[i], "--disable-in-process-stack-traces") == 0) {
       options.disable_in_process_stack_traces = true;
       argv[i] = NULL;
+    } else if (strcmp(argv[i], "--enable-os-system") == 0) {
+      options.enable_os_system = true;
+      argv[i] = NULL;
     }
   }
 
@@ -2924,7 +2942,7 @@ class Serializer : public ValueSerializer::Delegate {
         if (transfer_array->Get(context, i).ToLocal(&element)) {
           if (!element->IsArrayBuffer()) {
             Throw(isolate_, "Transfer array elements must be an ArrayBuffer");
-            break;
+            return Nothing<bool>();
           }
 
           Local<ArrayBuffer> array_buffer = Local<ArrayBuffer>::Cast(element);
@@ -3101,13 +3119,7 @@ int Shell::Main(int argc, char* argv[]) {
           ? v8::platform::InProcessStackDumping::kDisabled
           : v8::platform::InProcessStackDumping::kEnabled;
 
-  g_platform = v8::platform::CreateDefaultPlatform(
-      0, v8::platform::IdleTaskSupport::kEnabled, in_process_stack_dumping);
-  if (i::FLAG_verify_predictable) {
-    g_platform = new PredictablePlatform(std::unique_ptr<Platform>(g_platform));
-  }
-
-  platform::tracing::TracingController* tracing_controller;
+  platform::tracing::TracingController* tracing_controller = nullptr;
   if (options.trace_enabled && !i::FLAG_verify_predictable) {
     trace_file.open("v8_trace.json");
     tracing_controller = new platform::tracing::TracingController();
@@ -3116,7 +3128,13 @@ int Shell::Main(int argc, char* argv[]) {
             platform::tracing::TraceBuffer::kRingBufferChunks,
             platform::tracing::TraceWriter::CreateJSONTraceWriter(trace_file));
     tracing_controller->Initialize(trace_buffer);
-    platform::SetTracingController(g_platform, tracing_controller);
+  }
+
+  g_platform = v8::platform::CreateDefaultPlatform(
+      0, v8::platform::IdleTaskSupport::kEnabled, in_process_stack_dumping,
+      tracing_controller);
+  if (i::FLAG_verify_predictable) {
+    g_platform = new PredictablePlatform(std::unique_ptr<Platform>(g_platform));
   }
 
   v8::V8::InitializePlatform(g_platform);
@@ -3127,7 +3145,6 @@ int Shell::Main(int argc, char* argv[]) {
   } else {
     v8::V8::InitializeExternalStartupData(argv[0]);
   }
-  SetFlagsFromString("--trace-hydrogen-file=hydrogen.cfg");
   SetFlagsFromString("--trace-turbo-cfg-file=turbo.cfg");
   SetFlagsFromString("--redirect-code-traces-to=code.asm");
   int result = 0;

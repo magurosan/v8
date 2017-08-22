@@ -72,7 +72,6 @@ static const char* kGoldenFileDirectory =
 class InitializedIgnitionHandleScope : public InitializedHandleScope {
  public:
   InitializedIgnitionHandleScope() {
-    i::FLAG_ignition = true;
     i::FLAG_always_opt = false;
     i::FLAG_allow_natives_syntax = true;
   }
@@ -2356,6 +2355,34 @@ TEST(Generators) {
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("Generators.golden")));
+}
+
+TEST(AsyncGenerators) {
+  bool old_flag = i::FLAG_harmony_async_iteration;
+  i::FLAG_harmony_async_iteration = true;
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("f");
+
+  const char* snippets[] = {
+      "async function* f() { }\n"
+      "f();\n",
+
+      "async function* f() { yield 42 }\n"
+      "f();\n",
+
+      "async function* f() { for (let x of [42]) yield x }\n"
+      "f();\n",
+
+      "function* g() { yield 42 }\n"
+      "async function* f() { yield* g() }\n"
+      "f();\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("AsyncGenerators.golden")));
+  i::FLAG_harmony_async_iteration = old_flag;
 }
 
 TEST(Modules) {

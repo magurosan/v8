@@ -131,17 +131,30 @@ PreParser::PreParseResult PreParser::PreParseProgram(bool is_module) {
 }
 
 PreParser::PreParseResult PreParser::PreParseFunction(
-    FunctionKind kind, DeclarationScope* function_scope, bool parsing_module,
-    bool is_inner_function, bool may_abort, int* use_counts) {
+    const AstRawString* function_name, FunctionKind kind,
+    FunctionLiteral::FunctionType function_type,
+    DeclarationScope* function_scope, bool parsing_module,
+    bool is_inner_function, bool may_abort, int* use_counts,
+    ProducedPreParsedScopeData** produced_preparsed_scope_data) {
   DCHECK_EQ(FUNCTION_SCOPE, function_scope->scope_type());
   parsing_module_ = parsing_module;
   use_counts_ = use_counts;
   DCHECK(!track_unresolved_variables_);
-  track_unresolved_variables_ =
-      is_inner_function || FLAG_experimental_preparser_scope_analysis;
+  track_unresolved_variables_ = is_inner_function;
 #ifdef DEBUG
   function_scope->set_is_being_lazily_parsed(true);
 #endif
+
+  // Start collecting data for a new function which might contain skippable
+  // functions.
+  std::unique_ptr<ProducedPreParsedScopeData::DataGatheringScope>
+      produced_preparsed_scope_data_scope;
+  if (FLAG_experimental_preparser_scope_analysis && !IsArrowFunction(kind)) {
+    track_unresolved_variables_ = true;
+    produced_preparsed_scope_data_scope.reset(
+        new ProducedPreParsedScopeData::DataGatheringScope(function_scope,
+                                                           this));
+  }
 
   // In the preparser, we use the function literal ids to count how many
   // FunctionLiterals were encountered. The PreParser doesn't actually persist
@@ -208,22 +221,12 @@ PreParser::PreParseResult PreParser::PreParseFunction(
   }
 
   if (!IsArrowFunction(kind) && track_unresolved_variables_) {
+    CreateFunctionNameAssignment(function_name, function_type, function_scope);
+
     // Declare arguments after parsing the function since lexical 'arguments'
     // masks the arguments object. Declare arguments before declaring the
     // function var since the arguments object masks 'function arguments'.
     function_scope->DeclareArguments(ast_value_factory());
-
-    if (FLAG_experimental_preparser_scope_analysis &&
-        preparsed_scope_data_ != nullptr && result != kLazyParsingAborted) {
-      // We're not going to skip this function, but it might contain skippable
-      // functions inside it.
-      preparsed_scope_data_->AddFunction(
-          scope()->start_position(),
-          PreParseData::FunctionData(
-              scanner()->peek_location().end_pos, scope()->num_parameters(),
-              GetLastFunctionLiteralId(), scope()->language_mode(),
-              scope()->AsDeclarationScope()->uses_super_property()));
-    }
   }
 
   use_counts_ = nullptr;
@@ -247,6 +250,8 @@ PreParser::PreParseResult PreParser::PreParseFunction(
       ValidateFormalParameters(function_scope->language_mode(),
                                allow_duplicate_parameters,
                                CHECK_OK_VALUE(kPreParseSuccess));
+
+      *produced_preparsed_scope_data = produced_preparsed_scope_data_;
     }
 
     if (is_strict(function_scope->language_mode())) {
@@ -289,6 +294,20 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
 
   DeclarationScope* function_scope = NewFunctionScope(kind);
   function_scope->SetLanguageMode(language_mode);
+
+  // Start collecting data for a new function which might contain skippable
+  // functions.
+  std::unique_ptr<ProducedPreParsedScopeData::DataGatheringScope>
+      produced_preparsed_scope_data_scope;
+  if (!function_state_->next_function_is_likely_called() &&
+      produced_preparsed_scope_data_ != nullptr) {
+    DCHECK(FLAG_experimental_preparser_scope_analysis);
+    DCHECK(track_unresolved_variables_);
+    produced_preparsed_scope_data_scope.reset(
+        new ProducedPreParsedScopeData::DataGatheringScope(function_scope,
+                                                           this));
+  }
+
   FunctionState function_state(&function_state_, &scope_, function_scope);
   DuplicateFinder duplicate_finder;
   ExpressionClassifier formals_classifier(this, &duplicate_finder);
@@ -334,14 +353,9 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
     CheckStrictOctalLiteral(start_position, end_position, CHECK_OK);
   }
 
-  if (FLAG_experimental_preparser_scope_analysis &&
-      track_unresolved_variables_ && preparsed_scope_data_ != nullptr) {
-    preparsed_scope_data_->AddSkippableFunction(
-        start_position,
-        PreParseData::FunctionData(
-            end_position, scope()->num_parameters(),
-            GetLastFunctionLiteralId() - func_id, scope()->language_mode(),
-            scope()->AsDeclarationScope()->uses_super_property()));
+  if (produced_preparsed_scope_data_scope) {
+    produced_preparsed_scope_data_scope->MarkFunctionAsSkippable(
+        end_position, GetLastFunctionLiteralId() - func_id);
   }
   if (FLAG_trace_preparse) {
     PrintF("  [%s]: %i-%i\n",
@@ -367,6 +381,31 @@ PreParser::LazyParsingResult PreParser::ParseStatementListAndLogFunction(
   log_.LogFunction(body_end, formals->num_parameters(),
                    GetLastFunctionLiteralId());
   return kLazyParsingComplete;
+}
+
+PreParserStatement PreParser::BuildParameterInitializationBlock(
+    const PreParserFormalParameters& parameters, bool* ok) {
+  DCHECK(!parameters.is_simple);
+  DCHECK(scope()->is_function_scope());
+  if (FLAG_experimental_preparser_scope_analysis &&
+      scope()->AsDeclarationScope()->calls_sloppy_eval()) {
+    DCHECK_NOT_NULL(produced_preparsed_scope_data_);
+    // We cannot replicate the Scope structure constructed by the Parser,
+    // because we've lost information whether each individual parameter was
+    // simple or not. Give up trying to produce data to skip inner functions.
+    if (produced_preparsed_scope_data_->parent() != nullptr) {
+      // Lazy parsing started before the current function; the function which
+      // cannot contain skippable functions is the parent function. (Its inner
+      // functions cannot either; they are implicitly bailed out.)
+      produced_preparsed_scope_data_->parent()->Bailout();
+    } else {
+      // Lazy parsing started at the current function; it cannot contain
+      // skippable functions.
+      produced_preparsed_scope_data_->Bailout();
+    }
+  }
+
+  return PreParserStatement::Default();
 }
 
 PreParserExpression PreParser::ExpressionFromIdentifier(

@@ -6,6 +6,7 @@
 #define V8_OBJECTS_SHARED_FUNCTION_INFO_INL_H_
 
 #include "src/heap/heap-inl.h"
+#include "src/objects/scope-info.h"
 #include "src/objects/shared-function-info.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -13,6 +14,10 @@
 
 namespace v8 {
 namespace internal {
+
+CAST_ACCESSOR(PreParsedScopeData)
+ACCESSORS(PreParsedScopeData, scope_data, PodArray<uint32_t>, kScopeDataOffset)
+ACCESSORS(PreParsedScopeData, child_data, FixedArray, kChildDataOffset)
 
 TYPE_CHECKER(SharedFunctionInfo, SHARED_FUNCTION_INFO_TYPE)
 CAST_ACCESSOR(SharedFunctionInfo)
@@ -22,10 +27,6 @@ ACCESSORS(SharedFunctionInfo, raw_name, Object, kNameOffset)
 ACCESSORS(SharedFunctionInfo, construct_stub, Code, kConstructStubOffset)
 ACCESSORS(SharedFunctionInfo, feedback_metadata, FeedbackMetadata,
           kFeedbackMetadataOffset)
-SMI_ACCESSORS(SharedFunctionInfo, function_literal_id, kFunctionLiteralIdOffset)
-#if V8_SFI_HAS_UNIQUE_ID
-SMI_ACCESSORS(SharedFunctionInfo, unique_id, kUniqueIdOffset)
-#endif
 ACCESSORS(SharedFunctionInfo, instance_class_name, Object,
           kInstanceClassNameOffset)
 ACCESSORS(SharedFunctionInfo, function_data, Object, kFunctionDataOffset)
@@ -33,12 +34,19 @@ ACCESSORS(SharedFunctionInfo, script, Object, kScriptOffset)
 ACCESSORS(SharedFunctionInfo, debug_info, Object, kDebugInfoOffset)
 ACCESSORS(SharedFunctionInfo, function_identifier, Object,
           kFunctionIdentifierOffset)
+ACCESSORS(SharedFunctionInfo, preparsed_scope_data, Object,
+          kPreParsedScopeDataOffset)
 
-BOOL_ACCESSORS(SharedFunctionInfo, start_position_and_type, is_named_expression,
-               kIsNamedExpressionBit)
-BOOL_ACCESSORS(SharedFunctionInfo, start_position_and_type, is_toplevel,
-               kIsTopLevelBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, start_position_and_type,
+                    is_named_expression,
+                    SharedFunctionInfo::IsNamedExpressionBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, start_position_and_type, is_toplevel,
+                    SharedFunctionInfo::IsTopLevelBit)
 
+INT_ACCESSORS(SharedFunctionInfo, function_literal_id, kFunctionLiteralIdOffset)
+#if V8_SFI_HAS_UNIQUE_ID
+INT_ACCESSORS(SharedFunctionInfo, unique_id, kUniqueIdOffset)
+#endif
 INT_ACCESSORS(SharedFunctionInfo, length, kLengthOffset)
 INT_ACCESSORS(SharedFunctionInfo, internal_formal_parameter_count,
               kFormalParameterCountOffset)
@@ -50,11 +58,6 @@ INT_ACCESSORS(SharedFunctionInfo, start_position_and_type,
 INT_ACCESSORS(SharedFunctionInfo, function_token_position,
               kFunctionTokenPositionOffset)
 INT_ACCESSORS(SharedFunctionInfo, compiler_hints, kCompilerHintsOffset)
-INT_ACCESSORS(SharedFunctionInfo, opt_count_and_bailout_reason,
-              kOptCountAndBailoutReasonOffset)
-INT_ACCESSORS(SharedFunctionInfo, counters, kCountersOffset)
-INT_ACCESSORS(SharedFunctionInfo, ast_node_count, kAstNodeCountOffset)
-INT_ACCESSORS(SharedFunctionInfo, profiler_ticks, kProfilerTicksOffset)
 
 bool SharedFunctionInfo::has_shared_name() const {
   return raw_name() != kNoSharedNameSentinel;
@@ -66,6 +69,11 @@ String* SharedFunctionInfo::name() const {
   return String::cast(raw_name());
 }
 
+void SharedFunctionInfo::set_name(String* name) {
+  set_raw_name(name);
+  UpdateFunctionMapIndex();
+}
+
 AbstractCode* SharedFunctionInfo::abstract_code() {
   if (HasBytecodeArray()) {
     return AbstractCode::cast(bytecode_array());
@@ -74,35 +82,36 @@ AbstractCode* SharedFunctionInfo::abstract_code() {
   }
 }
 
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, allows_lazy_compilation,
-               kAllowLazyCompilation)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, uses_arguments,
-               kUsesArguments)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, has_duplicate_parameters,
-               kHasDuplicateParameters)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, asm_function, kIsAsmFunction)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_declaration,
-               kIsDeclaration)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, marked_for_tier_up,
-               kMarkedForTierUp)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints,
-               has_concurrent_optimization_job, kHasConcurrentOptimizationJob)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, allows_lazy_compilation,
+                    SharedFunctionInfo::AllowLazyCompilationBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, uses_arguments,
+                    SharedFunctionInfo::UsesArgumentsBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints,
+                    has_duplicate_parameters,
+                    SharedFunctionInfo::HasDuplicateParametersBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, asm_function,
+                    SharedFunctionInfo::IsAsmFunctionBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, is_declaration,
+                    SharedFunctionInfo::IsDeclarationBit)
 
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, needs_home_object,
-               kNeedsHomeObject)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, native, kNative)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, force_inline, kForceInline)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, must_use_ignition_turbo,
-               kMustUseIgnitionTurbo)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_asm_wasm_broken,
-               kIsAsmWasmBroken)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, optimization_disabled,
-               kOptimizationDisabled)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, native,
+                    SharedFunctionInfo::IsNativeBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, force_inline,
+                    SharedFunctionInfo::ForceInlineBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, compiler_hints, is_asm_wasm_broken,
+                    SharedFunctionInfo::IsAsmWasmBrokenBit)
+
+bool SharedFunctionInfo::optimization_disabled() const {
+  return disable_optimization_reason() != BailoutReason::kNoReason;
+}
+
+BailoutReason SharedFunctionInfo::disable_optimization_reason() const {
+  return DisabledOptimizationReasonBits::decode(compiler_hints());
+}
 
 LanguageMode SharedFunctionInfo::language_mode() {
   STATIC_ASSERT(LANGUAGE_END == 2);
-  return construct_language_mode(
-      BooleanBit::get(compiler_hints(), kStrictModeFunction));
+  return construct_language_mode(IsStrictBit::decode(compiler_hints()));
 }
 
 void SharedFunctionInfo::set_language_mode(LanguageMode language_mode) {
@@ -111,8 +120,9 @@ void SharedFunctionInfo::set_language_mode(LanguageMode language_mode) {
   // again or go up in the chain:
   DCHECK(is_sloppy(this->language_mode()) || is_strict(language_mode));
   int hints = compiler_hints();
-  hints = BooleanBit::set(hints, kStrictModeFunction, is_strict(language_mode));
+  hints = IsStrictBit::update(hints, is_strict(language_mode));
   set_compiler_hints(hints);
+  UpdateFunctionMapIndex();
 }
 
 FunctionKind SharedFunctionInfo::kind() const {
@@ -124,38 +134,75 @@ void SharedFunctionInfo::set_kind(FunctionKind kind) {
   int hints = compiler_hints();
   hints = FunctionKindBits::update(hints, kind);
   set_compiler_hints(hints);
+  UpdateFunctionMapIndex();
 }
 
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints,
-               name_should_print_as_anonymous, kNameShouldPrintAsAnonymous)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, is_anonymous_expression,
-               kIsAnonymousExpression)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, deserialized, kDeserialized)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, has_no_side_effect,
-               kHasNoSideEffect)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, computed_has_no_side_effect,
-               kComputedHasNoSideEffect)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, debug_is_blackboxed,
-               kDebugIsBlackboxed)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, computed_debug_is_blackboxed,
-               kComputedDebugIsBlackboxed)
-BOOL_ACCESSORS(SharedFunctionInfo, debugger_hints, has_reported_binary_coverage,
-               kHasReportedBinaryCoverage)
+bool SharedFunctionInfo::needs_home_object() const {
+  return NeedsHomeObjectBit::decode(compiler_hints());
+}
+
+void SharedFunctionInfo::set_needs_home_object(bool value) {
+  int hints = compiler_hints();
+  hints = NeedsHomeObjectBit::update(hints, value);
+  set_compiler_hints(hints);
+  UpdateFunctionMapIndex();
+}
+
+int SharedFunctionInfo::function_map_index() const {
+  // Note: Must be kept in sync with the FastNewClosure builtin.
+  int index = Context::FIRST_FUNCTION_MAP_INDEX +
+              FunctionMapIndexBits::decode(compiler_hints());
+  DCHECK_LE(index, Context::LAST_FUNCTION_MAP_INDEX);
+  return index;
+}
+
+void SharedFunctionInfo::set_function_map_index(int index) {
+  STATIC_ASSERT(Context::LAST_FUNCTION_MAP_INDEX <=
+                Context::FIRST_FUNCTION_MAP_INDEX + FunctionMapIndexBits::kMax);
+  DCHECK_LE(Context::FIRST_FUNCTION_MAP_INDEX, index);
+  DCHECK_LE(index, Context::LAST_FUNCTION_MAP_INDEX);
+  index -= Context::FIRST_FUNCTION_MAP_INDEX;
+  set_compiler_hints(FunctionMapIndexBits::update(compiler_hints(), index));
+}
+
+void SharedFunctionInfo::clear_padding() {
+  memset(this->address() + kSize, 0, kAlignedSize - kSize);
+}
+
+void SharedFunctionInfo::UpdateFunctionMapIndex() {
+  int map_index = Context::FunctionMapIndex(
+      language_mode(), kind(), has_shared_name(), needs_home_object());
+  set_function_map_index(map_index);
+}
+
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints,
+                    name_should_print_as_anonymous,
+                    SharedFunctionInfo::NameShouldPrintAsAnonymousBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints, is_anonymous_expression,
+                    SharedFunctionInfo::IsAnonymousExpressionBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints, deserialized,
+                    SharedFunctionInfo::IsDeserializedBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints, has_no_side_effect,
+                    SharedFunctionInfo::HasNoSideEffectBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints,
+                    computed_has_no_side_effect,
+                    SharedFunctionInfo::ComputedHasNoSideEffectBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints, debug_is_blackboxed,
+                    SharedFunctionInfo::DebugIsBlackboxedBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints,
+                    computed_debug_is_blackboxed,
+                    SharedFunctionInfo::ComputedDebugIsBlackboxedBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, debugger_hints,
+                    has_reported_binary_coverage,
+                    SharedFunctionInfo::HasReportedBinaryCoverageBit)
 
 void SharedFunctionInfo::DontAdaptArguments() {
   DCHECK(code()->kind() == Code::BUILTIN || code()->kind() == Code::STUB);
   set_internal_formal_parameter_count(kDontAdaptArgumentsSentinel);
 }
 
-int SharedFunctionInfo::start_position() const {
-  return start_position_and_type() >> kStartPositionShift;
-}
-
-void SharedFunctionInfo::set_start_position(int start_position) {
-  set_start_position_and_type(
-      (start_position << kStartPositionShift) |
-      (start_position_and_type() & ~kStartPositionMask));
-}
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, start_position_and_type, start_position,
+                    SharedFunctionInfo::StartPositionBits)
 
 Code* SharedFunctionInfo::code() const {
   return Code::cast(READ_FIELD(this, kCodeOffset));
@@ -203,8 +250,7 @@ ACCESSORS(SharedFunctionInfo, outer_scope_info, HeapObject,
 
 bool SharedFunctionInfo::is_compiled() const {
   Builtins* builtins = GetIsolate()->builtins();
-  DCHECK(code() != builtins->builtin(Builtins::kCompileOptimizedConcurrent));
-  DCHECK(code() != builtins->builtin(Builtins::kCompileOptimized));
+  DCHECK(code() != builtins->builtin(Builtins::kCheckOptimizationMarker));
   return code() != builtins->builtin(Builtins::kCompileLazy);
 }
 
@@ -292,8 +338,7 @@ bool SharedFunctionInfo::HasBuiltinFunctionId() {
 
 BuiltinFunctionId SharedFunctionInfo::builtin_function_id() {
   DCHECK(HasBuiltinFunctionId());
-  return static_cast<BuiltinFunctionId>(
-      Smi::cast(function_identifier())->value());
+  return static_cast<BuiltinFunctionId>(Smi::ToInt(function_identifier()));
 }
 
 void SharedFunctionInfo::set_builtin_function_id(BuiltinFunctionId id) {
@@ -318,72 +363,6 @@ void SharedFunctionInfo::set_inferred_name(String* inferred_name) {
   set_function_identifier(inferred_name);
 }
 
-int SharedFunctionInfo::ic_age() { return ICAgeBits::decode(counters()); }
-
-void SharedFunctionInfo::set_ic_age(int ic_age) {
-  set_counters(ICAgeBits::update(counters(), ic_age));
-}
-
-int SharedFunctionInfo::deopt_count() {
-  return DeoptCountBits::decode(counters());
-}
-
-void SharedFunctionInfo::set_deopt_count(int deopt_count) {
-  set_counters(DeoptCountBits::update(counters(), deopt_count));
-}
-
-void SharedFunctionInfo::increment_deopt_count() {
-  int value = counters();
-  int deopt_count = DeoptCountBits::decode(value);
-  // Saturate the deopt count when incrementing, rather than overflowing.
-  if (deopt_count < DeoptCountBits::kMax) {
-    set_counters(DeoptCountBits::update(value, deopt_count + 1));
-  }
-}
-
-int SharedFunctionInfo::opt_reenable_tries() {
-  return OptReenableTriesBits::decode(counters());
-}
-
-void SharedFunctionInfo::set_opt_reenable_tries(int tries) {
-  set_counters(OptReenableTriesBits::update(counters(), tries));
-}
-
-int SharedFunctionInfo::opt_count() {
-  return OptCountBits::decode(opt_count_and_bailout_reason());
-}
-
-void SharedFunctionInfo::set_opt_count(int opt_count) {
-  set_opt_count_and_bailout_reason(
-      OptCountBits::update(opt_count_and_bailout_reason(), opt_count));
-}
-
-BailoutReason SharedFunctionInfo::disable_optimization_reason() {
-  return static_cast<BailoutReason>(
-      DisabledOptimizationReasonBits::decode(opt_count_and_bailout_reason()));
-}
-
-bool SharedFunctionInfo::has_deoptimization_support() {
-  Code* code = this->code();
-  return code->kind() == Code::FUNCTION && code->has_deoptimization_support();
-}
-
-void SharedFunctionInfo::TryReenableOptimization() {
-  int tries = opt_reenable_tries();
-  set_opt_reenable_tries((tries + 1) & OptReenableTriesBits::kMax);
-  // We reenable optimization whenever the number of tries is a large
-  // enough power of 2.
-  if (tries >= 16 && (((tries - 1) & tries) == 0)) {
-    set_optimization_disabled(false);
-    set_deopt_count(0);
-  }
-}
-
-void SharedFunctionInfo::set_disable_optimization_reason(BailoutReason reason) {
-  set_opt_count_and_bailout_reason(DisabledOptimizationReasonBits::update(
-      opt_count_and_bailout_reason(), reason));
-}
-
 bool SharedFunctionInfo::IsUserJavaScript() {
   Object* script_obj = script();
   if (script_obj->IsUndefined(GetIsolate())) return false;
@@ -393,6 +372,10 @@ bool SharedFunctionInfo::IsUserJavaScript() {
 
 bool SharedFunctionInfo::IsSubjectToDebugging() {
   return IsUserJavaScript() && !HasAsmWasmData();
+}
+
+bool SharedFunctionInfo::HasPreParsedScopeData() const {
+  return preparsed_scope_data()->IsPreParsedScopeData();
 }
 
 }  // namespace internal

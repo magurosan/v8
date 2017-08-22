@@ -244,8 +244,7 @@ void ArmDebugger::Debug() {
               value = GetRegisterValue(i);
               PrintF(
                   "%3s: 0x%08x %10d",
-                  RegisterConfiguration::Crankshaft()->GetGeneralRegisterName(
-                      i),
+                  RegisterConfiguration::Default()->GetGeneralRegisterName(i),
                   value, value);
               if ((argc == 3 && strcmp(arg2, "fp") == 0) &&
                   i < 8 &&
@@ -3225,7 +3224,6 @@ void Simulator::DecodeType7(Instruction* instr) {
 void Simulator::DecodeTypeVFP(Instruction* instr) {
   DCHECK((instr->TypeValue() == 7) && (instr->Bit(24) == 0x0) );
   DCHECK(instr->Bits(11, 9) == 0x5);
-
   // Obtain single precision register codes.
   int m = instr->VFPMRegValue(kSinglePrecision);
   int d = instr->VFPDRegValue(kSinglePrecision);
@@ -5221,7 +5219,7 @@ void Simulator::DecodeSpecialCondition(Instruction* instr) {
                 case Neon16: {
                   uint16_t src[8];
                   get_neon_register(Vm, src);
-                  for (int i = 0; i < 4; i++) {
+                  for (int i = 0; i < 2; i++) {
                     std::swap(src[i * 4], src[i * 4 + 3]);
                     std::swap(src[i * 4 + 1], src[i * 4 + 2]);
                   }
@@ -5834,7 +5832,7 @@ void Simulator::Execute() {
     }
   } else {
     // FLAG_stop_sim_at is at the non-default value. Stop in the debugger when
-    // we reach the particular instuction count.
+    // we reach the particular instruction count.
     while (program_counter != end_sim_pc) {
       Instruction* instr = reinterpret_cast<Instruction*>(program_counter);
       icount_++;

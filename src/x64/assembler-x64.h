@@ -83,6 +83,19 @@ namespace internal {
 // The length of pushq(rbp), movp(rbp, rsp), Push(rsi) and Push(rdi).
 constexpr int kNoCodeAgeSequenceLength = kPointerSize == kInt64Size ? 6 : 17;
 
+const int kNumRegs = 16;
+const RegList kJSCallerSaved =
+    1 << 0 |  // rax
+    1 << 1 |  // rcx
+    1 << 2 |  // rdx
+    1 << 3 |  // rbx - used as a caller-saved register in JavaScript code
+    1 << 7;   // rdi - callee function
+
+const int kNumJSCallerSaved = 5;
+
+// Number of registers for which space is reserved in safepoints.
+const int kNumSafepointRegisters = 16;
+
 // CPU Registers.
 //
 // 1) We would prefer to use an enum, but enum values are assignment-
@@ -449,15 +462,14 @@ class Operand BASE_EMBEDDED {
 
 // Shift instructions on operands/registers with kPointerSize, kInt32Size and
 // kInt64Size.
-#define SHIFT_INSTRUCTION_LIST(V)       \
-  V(rol, 0x0)                           \
-  V(ror, 0x1)                           \
-  V(rcl, 0x2)                           \
-  V(rcr, 0x3)                           \
-  V(shl, 0x4)                           \
-  V(shr, 0x5)                           \
-  V(sar, 0x7)                           \
-
+#define SHIFT_INSTRUCTION_LIST(V) \
+  V(rol, 0x0)                     \
+  V(ror, 0x1)                     \
+  V(rcl, 0x2)                     \
+  V(rcr, 0x3)                     \
+  V(shl, 0x4)                     \
+  V(shr, 0x5)                     \
+  V(sar, 0x7)
 
 class Assembler : public AssemblerBase {
  private:
@@ -706,12 +718,6 @@ class Assembler : public AssemblerBase {
   // move.
   void movp_heap_number(Register dst, double value);
 
-  // Patch the dummy heap number that we emitted at {pc} during code assembly
-  // with the actual heap object (handle).
-  static void set_heap_number(Handle<HeapObject> number, Address pc) {
-    Memory::Object_Handle_at(pc) = number;
-  }
-
   // Loads a 64-bit immediate into a register.
   void movq(Register dst, int64_t value,
             RelocInfo::Mode rmode = RelocInfo::NONE64);
@@ -929,9 +935,9 @@ class Assembler : public AssemblerBase {
   // Call near relative 32-bit displacement, relative to next instruction.
   void call(Label* L);
   void call(Address entry, RelocInfo::Mode rmode);
+  void call(CodeStub* stub);
   void call(Handle<Code> target,
-            RelocInfo::Mode rmode = RelocInfo::CODE_TARGET,
-            TypeFeedbackId ast_id = TypeFeedbackId::None());
+            RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
 
   // Calls directly to the given address using a relative offset.
   // Should only ever be used in Code objects for calls within the
@@ -2068,9 +2074,7 @@ class Assembler : public AssemblerBase {
   inline void emitp(void* x, RelocInfo::Mode rmode);
   inline void emitq(uint64_t x);
   inline void emitw(uint16_t x);
-  inline void emit_code_target(Handle<Code> target,
-                               RelocInfo::Mode rmode,
-                               TypeFeedbackId ast_id = TypeFeedbackId::None());
+  inline void emit_code_target(Handle<Code> target, RelocInfo::Mode rmode);
   inline void emit_runtime_entry(Address entry, RelocInfo::Mode rmode);
   inline void emit(Immediate x);
 
@@ -2488,7 +2492,7 @@ class Assembler : public AssemblerBase {
     arithmetic_op(0x31, src, dst, size);
   }
 
-  // Most BMI instructions are similiar.
+  // Most BMI instructions are similar.
   void bmi1q(byte op, Register reg, Register vreg, Register rm);
   void bmi1q(byte op, Register reg, Register vreg, const Operand& rm);
   void bmi1l(byte op, Register reg, Register vreg, Register rm);
@@ -2513,6 +2517,19 @@ class Assembler : public AssemblerBase {
   std::deque<int> internal_reference_positions_;
 
   List< Handle<Code> > code_targets_;
+
+  // The following functions help with avoiding allocations of embedded heap
+  // objects during the code assembly phase. {RequestHeapObject} records the
+  // need for a future heap number allocation or code stub generation. After
+  // code assembly, {AllocateAndInstallRequestedHeapObjects} will allocate these
+  // objects and place them where they are expected (determined by the pc offset
+  // associated with each request). That is, for each request, it will patch the
+  // dummy heap object handle that we emitted during code assembly with the
+  // actual heap object handle.
+  void RequestHeapObject(HeapObjectRequest request);
+  void AllocateAndInstallRequestedHeapObjects(Isolate* isolate);
+
+  std::forward_list<HeapObjectRequest> heap_object_requests_;
 };
 
 

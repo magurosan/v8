@@ -356,9 +356,13 @@ class Simulator {
   enum MSADataFormat { MSA_VECT = 0, MSA_BYTE, MSA_HALF, MSA_WORD, MSA_DWORD };
   typedef union {
     int8_t b[kMSALanesByte];
+    uint8_t ub[kMSALanesByte];
     int16_t h[kMSALanesHalf];
+    uint16_t uh[kMSALanesHalf];
     int32_t w[kMSALanesWord];
+    uint32_t uw[kMSALanesWord];
     int64_t d[kMSALanesDword];
+    uint64_t ud[kMSALanesDword];
   } msa_reg_t;
 
   // Read and write memory.
@@ -382,6 +386,11 @@ class Simulator {
   inline double ReadD(int64_t addr, Instruction* instr);
   inline void WriteD(int64_t addr, double value, Instruction* instr);
 
+  template <typename T>
+  T ReadMem(int64_t addr, Instruction* instr);
+  template <typename T>
+  void WriteMem(int64_t addr, T value, Instruction* instr);
+
   // Helper for debugging memory access.
   inline void DieOrDebug();
 
@@ -392,6 +401,10 @@ class Simulator {
   void TraceMSARegWr(T* value);
   void TraceMemWr(int64_t addr, int64_t value, TraceType t);
   void TraceMemRd(int64_t addr, int64_t value, TraceType t = DWORD);
+  template <typename T>
+  void TraceMemRd(int64_t addr, T value);
+  template <typename T>
+  void TraceMemWr(int64_t addr, T value);
 
   // Operations depending on endianness.
   // Get Double Higher / Lower word.
@@ -435,6 +448,10 @@ class Simulator {
   void DecodeTypeMsaVec();
   void DecodeTypeMsa2R();
   void DecodeTypeMsa2RF();
+  template <typename T>
+  T MsaI5InstrHelper(uint32_t opcode, T ws, int32_t i5);
+  template <typename T>
+  T MsaBitInstrHelper(uint32_t opcode, T wd, T ws, int32_t m);
 
   // Executing is handled based on the instruction type.
   void DecodeTypeRegister();

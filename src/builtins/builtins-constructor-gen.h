@@ -26,6 +26,8 @@ class ConstructorBuiltinsAssembler : public CodeStubAssembler {
                                   Node* context, Label* call_runtime,
                                   AllocationSiteMode allocation_site_mode);
 
+  Node* EmitCreateEmptyArrayLiteral(Node* closure, Node* iteral_index,
+                                    Node* context);
   void CreateFastCloneShallowArrayBuiltin(
       AllocationSiteMode allocation_site_mode);
 
@@ -42,6 +44,9 @@ class ConstructorBuiltinsAssembler : public CodeStubAssembler {
                              Node* boilerplate_elements, Node* allocation_site,
                              Node* capacity, ElementsKind kind);
   Node* CopyFixedArrayBase(Node* elements);
+
+  Node* NotHasBoilerplate(Node* literal_site);
+  Node* LoadAllocationSiteBoilerplate(Node* allocation_site);
 };
 
 }  // namespace internal

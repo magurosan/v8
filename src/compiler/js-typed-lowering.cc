@@ -681,23 +681,8 @@ Reduction JSTypedLowering::ReduceCreateConsString(Node* node) {
   }
 
   // Determine the {first} length.
-  HeapObjectBinopMatcher m(node);
-  Node* first_length =
-      (m.left().HasValue() && m.left().Value()->IsString())
-          ? jsgraph()->Constant(
-                Handle<String>::cast(m.left().Value())->length())
-          : effect = graph()->NewNode(
-                simplified()->LoadField(AccessBuilder::ForStringLength()),
-                first, effect, control);
-
-  // Determine the {second} length.
-  Node* second_length =
-      (m.right().HasValue() && m.right().Value()->IsString())
-          ? jsgraph()->Constant(
-                Handle<String>::cast(m.right().Value())->length())
-          : effect = graph()->NewNode(
-                simplified()->LoadField(AccessBuilder::ForStringLength()),
-                second, effect, control);
+  Node* first_length = BuildGetStringLength(first, &effect, control);
+  Node* second_length = BuildGetStringLength(second, &effect, control);
 
   // Compute the resulting length.
   Node* length =
@@ -784,13 +769,25 @@ Reduction JSTypedLowering::ReduceCreateConsString(Node* node) {
   return Changed(node);
 }
 
+Node* JSTypedLowering::BuildGetStringLength(Node* value, Node** effect,
+                                            Node* control) {
+  HeapObjectMatcher m(value);
+  Node* length =
+      (m.HasValue() && m.Value()->IsString())
+          ? jsgraph()->Constant(Handle<String>::cast(m.Value())->length())
+          : (*effect) = graph()->NewNode(
+                simplified()->LoadField(AccessBuilder::ForStringLength()),
+                value, *effect, control);
+  return length;
+}
+
 Reduction JSTypedLowering::ReduceSpeculativeNumberComparison(Node* node) {
   JSBinopReduction r(this, node);
   if (r.BothInputsAre(Type::Signed32()) ||
       r.BothInputsAre(Type::Unsigned32())) {
     return r.ChangeToPureOperator(r.NumberOpFromSpeculativeNumberOp());
   }
-  return Changed(node);
+  return NoChange();
 }
 
 Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
@@ -1174,23 +1171,6 @@ Reduction JSTypedLowering::ReduceJSToString(Node* node) {
   return NoChange();
 }
 
-Reduction JSTypedLowering::ReduceJSToPrimitiveToString(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSToPrimitiveToString, node->opcode());
-  Node* input = NodeProperties::GetValueInput(node, 0);
-  Type* input_type = NodeProperties::GetType(input);
-  if (input_type->Is(Type::Primitive())) {
-    // If node is already a primitive, then reduce to JSToString and try to
-    // reduce that further.
-    NodeProperties::ChangeOp(node, javascript()->ToString());
-    Reduction reduction = ReduceJSToString(node);
-    if (reduction.Changed()) {
-      return reduction;
-    }
-    return Changed(node);
-  }
-  return NoChange();
-}
-
 Reduction JSTypedLowering::ReduceJSToObject(Node* node) {
   DCHECK_EQ(IrOpcode::kJSToObject, node->opcode());
   Node* receiver = NodeProperties::GetValueInput(node, 0);
@@ -1202,13 +1182,6 @@ Reduction JSTypedLowering::ReduceJSToObject(Node* node) {
   if (receiver_type->Is(Type::Receiver())) {
     ReplaceWithValue(node, receiver, effect, control);
     return Replace(receiver);
-  }
-
-  // TODO(bmeurer/mstarzinger): Add support for lowering inside try blocks.
-  if (receiver_type->Maybe(Type::NullOrUndefined()) &&
-      NodeProperties::IsExceptionalCall(node)) {
-    // ToObject throws for null or undefined inputs.
-    return NoChange();
   }
 
   // Check whether {receiver} is a spec object.
@@ -1232,6 +1205,18 @@ Reduction JSTypedLowering::ReduceJSToObject(Node* node) {
     rfalse = efalse = if_false = graph()->NewNode(
         common()->Call(desc), jsgraph()->HeapConstant(callable.code()),
         receiver, context, frame_state, efalse, if_false);
+  }
+
+  // Update potential {IfException} uses of {node} to point to the above
+  // ToObject stub call node instead. Note that the stub can only throw on
+  // receivers that can be null or undefined.
+  Node* on_exception = nullptr;
+  if (receiver_type->Maybe(Type::NullOrUndefined()) &&
+      NodeProperties::IsExceptionalCall(node, &on_exception)) {
+    NodeProperties::ReplaceControlInput(on_exception, if_false);
+    NodeProperties::ReplaceEffectInput(on_exception, efalse);
+    if_false = graph()->NewNode(common()->IfSuccess(), if_false);
+    Revisit(on_exception);
   }
 
   control = graph()->NewNode(common()->Merge(2), if_true, if_false);
@@ -1390,6 +1375,146 @@ Reduction JSTypedLowering::ReduceJSStoreProperty(Node* node) {
     }
   }
   return NoChange();
+}
+
+Reduction JSTypedLowering::ReduceJSHasInPrototypeChain(Node* node) {
+  DCHECK_EQ(IrOpcode::kJSHasInPrototypeChain, node->opcode());
+  Node* value = NodeProperties::GetValueInput(node, 0);
+  Type* value_type = NodeProperties::GetType(value);
+  Node* prototype = NodeProperties::GetValueInput(node, 1);
+  Node* context = NodeProperties::GetContextInput(node);
+  Node* frame_state = NodeProperties::GetFrameStateInput(node);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+
+  // If {value} cannot be a receiver, then it cannot have {prototype} in
+  // it's prototype chain (all Primitive values have a null prototype).
+  if (value_type->Is(Type::Primitive())) {
+    Node* value = jsgraph()->FalseConstant();
+    ReplaceWithValue(node, value, effect, control);
+    return Replace(value);
+  }
+
+  Node* check0 = graph()->NewNode(simplified()->ObjectIsSmi(), value);
+  Node* branch0 =
+      graph()->NewNode(common()->Branch(BranchHint::kFalse), check0, control);
+
+  Node* if_true0 = graph()->NewNode(common()->IfTrue(), branch0);
+  Node* etrue0 = effect;
+  Node* vtrue0 = jsgraph()->FalseConstant();
+
+  control = graph()->NewNode(common()->IfFalse(), branch0);
+
+  // Loop through the {value}s prototype chain looking for the {prototype}.
+  Node* loop = control = graph()->NewNode(common()->Loop(2), control, control);
+  Node* eloop = effect =
+      graph()->NewNode(common()->EffectPhi(2), effect, effect, loop);
+  Node* vloop = value = graph()->NewNode(
+      common()->Phi(MachineRepresentation::kTagged, 2), value, value, loop);
+  NodeProperties::SetType(vloop, Type::NonInternal());
+
+  // Load the {value} map and instance type.
+  Node* value_map = effect = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForMap()), value, effect, control);
+  Node* value_instance_type = effect = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForMapInstanceType()), value_map,
+      effect, control);
+
+  // Check if the {value} is a special receiver, because for special
+  // receivers, i.e. proxies or API values that need access checks,
+  // we have to use the %HasInPrototypeChain runtime function instead.
+  Node* check1 = graph()->NewNode(
+      simplified()->NumberLessThanOrEqual(), value_instance_type,
+      jsgraph()->Constant(LAST_SPECIAL_RECEIVER_TYPE));
+  Node* branch1 =
+      graph()->NewNode(common()->Branch(BranchHint::kFalse), check1, control);
+
+  control = graph()->NewNode(common()->IfFalse(), branch1);
+
+  Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
+  Node* etrue1 = effect;
+  Node* vtrue1;
+
+  // Check if the {value} is not a receiver at all.
+  Node* check10 =
+      graph()->NewNode(simplified()->NumberLessThan(), value_instance_type,
+                       jsgraph()->Constant(FIRST_JS_RECEIVER_TYPE));
+  Node* branch10 =
+      graph()->NewNode(common()->Branch(BranchHint::kTrue), check10, if_true1);
+
+  // A primitive value cannot match the {prototype} we're looking for.
+  if_true1 = graph()->NewNode(common()->IfTrue(), branch10);
+  vtrue1 = jsgraph()->FalseConstant();
+
+  Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch10);
+  Node* efalse1 = etrue1;
+  Node* vfalse1;
+  {
+    // Slow path, need to call the %HasInPrototypeChain runtime function.
+    vfalse1 = efalse1 = if_false1 = graph()->NewNode(
+        javascript()->CallRuntime(Runtime::kHasInPrototypeChain), value,
+        prototype, context, frame_state, efalse1, if_false1);
+
+    // Replace any potential {IfException} uses of {node} to catch
+    // exceptions from this %HasInPrototypeChain runtime call instead.
+    Node* on_exception = nullptr;
+    if (NodeProperties::IsExceptionalCall(node, &on_exception)) {
+      NodeProperties::ReplaceControlInput(on_exception, vfalse1);
+      NodeProperties::ReplaceEffectInput(on_exception, efalse1);
+      if_false1 = graph()->NewNode(common()->IfSuccess(), vfalse1);
+      Revisit(on_exception);
+    }
+  }
+
+  // Load the {value} prototype.
+  Node* value_prototype = effect = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForMapPrototype()), value_map,
+      effect, control);
+
+  // Check if we reached the end of {value}s prototype chain.
+  Node* check2 = graph()->NewNode(simplified()->ReferenceEqual(),
+                                  value_prototype, jsgraph()->NullConstant());
+  Node* branch2 = graph()->NewNode(common()->Branch(), check2, control);
+
+  Node* if_true2 = graph()->NewNode(common()->IfTrue(), branch2);
+  Node* etrue2 = effect;
+  Node* vtrue2 = jsgraph()->FalseConstant();
+
+  control = graph()->NewNode(common()->IfFalse(), branch2);
+
+  // Check if we reached the {prototype}.
+  Node* check3 = graph()->NewNode(simplified()->ReferenceEqual(),
+                                  value_prototype, prototype);
+  Node* branch3 = graph()->NewNode(common()->Branch(), check3, control);
+
+  Node* if_true3 = graph()->NewNode(common()->IfTrue(), branch3);
+  Node* etrue3 = effect;
+  Node* vtrue3 = jsgraph()->TrueConstant();
+
+  control = graph()->NewNode(common()->IfFalse(), branch3);
+
+  // Close the loop.
+  vloop->ReplaceInput(1, value_prototype);
+  eloop->ReplaceInput(1, effect);
+  loop->ReplaceInput(1, control);
+
+  control = graph()->NewNode(common()->Merge(5), if_true0, if_true1, if_true2,
+                             if_true3, if_false1);
+  effect = graph()->NewNode(common()->EffectPhi(5), etrue0, etrue1, etrue2,
+                            etrue3, efalse1, control);
+
+  // Morph the {node} into an appropriate Phi.
+  ReplaceWithValue(node, node, effect, control);
+  node->ReplaceInput(0, vtrue0);
+  node->ReplaceInput(1, vtrue1);
+  node->ReplaceInput(2, vtrue2);
+  node->ReplaceInput(3, vtrue3);
+  node->ReplaceInput(4, vfalse1);
+  node->ReplaceInput(5, control);
+  node->TrimInputCount(6);
+  NodeProperties::ChangeOp(node,
+                           common()->Phi(MachineRepresentation::kTagged, 5));
+  return Changed(node);
 }
 
 Reduction JSTypedLowering::ReduceJSOrdinaryHasInstance(Node* node) {
@@ -1893,10 +2018,6 @@ Reduction JSTypedLowering::ReduceJSCallForwardVarargs(Node* node) {
   if (target_type->Is(Type::Function())) {
     // Compute flags for the call.
     CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
-    if (p.tail_call_mode() == TailCallMode::kAllow) {
-      flags |= CallDescriptor::kSupportsTailCalls;
-    }
-
     // Patch {node} to an indirect call via CallFunctionForwardVarargs.
     Callable callable = CodeFactory::CallFunctionForwardVarargs(isolate());
     node->InsertInput(graph()->zone(), 0,
@@ -1965,10 +2086,6 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
 
     // Compute flags for the call.
     CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
-    if (p.tail_call_mode() == TailCallMode::kAllow) {
-      flags |= CallDescriptor::kSupportsTailCalls;
-    }
-
     Node* new_target = jsgraph()->UndefinedConstant();
     Node* argument_count = jsgraph()->Constant(arity);
     if (NeedsArgumentAdaptorFrame(shared, arity)) {
@@ -2004,10 +2121,6 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
   if (target_type->Is(Type::Function())) {
     // Compute flags for the call.
     CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
-    if (p.tail_call_mode() == TailCallMode::kAllow) {
-      flags |= CallDescriptor::kSupportsTailCalls;
-    }
-
     // Patch {node} to an indirect call via the CallFunction builtin.
     Callable callable = CodeFactory::CallFunction(isolate(), convert_mode);
     node->InsertInput(graph()->zone(), 0,
@@ -2023,9 +2136,8 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
   // Maybe we did at least learn something about the {receiver}.
   if (p.convert_mode() != convert_mode) {
     NodeProperties::ChangeOp(
-        node,
-        javascript()->Call(p.arity(), p.frequency(), p.feedback(), convert_mode,
-                           p.tail_call_mode()));
+        node, javascript()->Call(p.arity(), p.frequency(), p.feedback(),
+                                 convert_mode));
     return Changed(node);
   }
 
@@ -2085,7 +2197,8 @@ Reduction JSTypedLowering::ReduceJSForInNext(Node* node) {
   {
     // Filter the {key} to check if it's still a valid property of the
     // {receiver} (does the ToName conversion implicitly).
-    Callable const callable = CodeFactory::ForInFilter(isolate());
+    Callable const callable =
+        Builtins::CallableFor(isolate(), Builtins::kForInFilter);
     CallDescriptor const* const desc = Linkage::GetStubCallDescriptor(
         isolate(), graph()->zone(), callable.descriptor(), 0,
         CallDescriptor::kNeedsFrameState);
@@ -2093,7 +2206,7 @@ Reduction JSTypedLowering::ReduceJSForInNext(Node* node) {
         common()->Call(desc), jsgraph()->HeapConstant(callable.code()), key,
         receiver, context, frame_state, effect, if_false0);
 
-    // Update potential {IfException} uses of {node} to point to the ahove
+    // Update potential {IfException} uses of {node} to point to the above
     // ForInFilter stub call node instead.
     Node* if_exception = nullptr;
     if (NodeProperties::IsExceptionalCall(node, &if_exception)) {
@@ -2148,21 +2261,19 @@ Reduction JSTypedLowering::ReduceJSGeneratorStore(Node* node) {
   Node* context = NodeProperties::GetContextInput(node);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
-  const GeneratorStoreParameters& p = GeneratorStoreParametersOf(node->op());
+  int register_count = OpParameter<int>(node);
 
   FieldAccess array_field = AccessBuilder::ForJSGeneratorObjectRegisterFile();
   FieldAccess context_field = AccessBuilder::ForJSGeneratorObjectContext();
   FieldAccess continuation_field =
       AccessBuilder::ForJSGeneratorObjectContinuation();
   FieldAccess input_or_debug_pos_field =
-      p.suspend_flags() == SuspendFlags::kAsyncGeneratorAwait
-          ? AccessBuilder::ForJSAsyncGeneratorObjectAwaitInputOrDebugPos()
-          : AccessBuilder::ForJSGeneratorObjectInputOrDebugPos();
+      AccessBuilder::ForJSGeneratorObjectInputOrDebugPos();
 
   Node* array = effect = graph()->NewNode(simplified()->LoadField(array_field),
                                           generator, effect, control);
 
-  for (int i = 0; i < p.register_count(); ++i) {
+  for (int i = 0; i < register_count; ++i) {
     Node* value = NodeProperties::GetValueInput(node, 3 + i);
     effect = graph()->NewNode(
         simplified()->StoreField(AccessBuilder::ForFixedArraySlot(i)), array,
@@ -2248,6 +2359,8 @@ Reduction JSTypedLowering::Reduce(Node* node) {
     case IrOpcode::kJSDivide:
     case IrOpcode::kJSModulus:
       return ReduceNumberBinop(node);
+    case IrOpcode::kJSHasInPrototypeChain:
+      return ReduceJSHasInPrototypeChain(node);
     case IrOpcode::kJSOrdinaryHasInstance:
       return ReduceJSOrdinaryHasInstance(node);
     case IrOpcode::kJSToBoolean:
@@ -2262,8 +2375,6 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSToNumber(node);
     case IrOpcode::kJSToString:
       return ReduceJSToString(node);
-    case IrOpcode::kJSToPrimitiveToString:
-      return ReduceJSToPrimitiveToString(node);
     case IrOpcode::kJSToObject:
       return ReduceJSToObject(node);
     case IrOpcode::kJSTypeOf:

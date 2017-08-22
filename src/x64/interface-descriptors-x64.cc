@@ -47,8 +47,6 @@ const Register StoreTransitionDescriptor::MapRegister() { return r11; }
 const Register StringCompareDescriptor::LeftRegister() { return rdx; }
 const Register StringCompareDescriptor::RightRegister() { return rax; }
 
-const Register StringConcatDescriptor::ArgumentsCountRegister() { return rbx; }
-
 const Register ApiGetterDescriptor::HolderRegister() { return rcx; }
 const Register ApiGetterDescriptor::CallbackRegister() { return rbx; }
 
@@ -101,57 +99,27 @@ void FastCloneShallowObjectDescriptor::InitializePlatformSpecific(
 }
 
 
-void CreateAllocationSiteDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {rbx, rdx};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
-void CreateWeakCellDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {rbx, rdx, rdi};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
 void CallFunctionDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {rdi};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
-void CallICTrampolineDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {rdi, rax, rdx};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void CallICDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {rdi, rax, rdx, rbx};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
-void CallConstructDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // rax : number of arguments
-  // rbx : feedback vector
-  // rdx : slot in feedback vector (Smi, for RecordCallTarget)
-  // rdi : constructor function
-  // TODO(turbofan): So far we don't gather type feedback and hence skip the
-  // slot parameter, but ArrayConstructStub needs the vector to be undefined.
-  Register registers[] = {rax, rdi, rbx};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
 void CallTrampolineDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // rax : number of arguments
   // rdi : the target to call
   Register registers[] = {rdi, rax};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void CallVarargsDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // rax : number of arguments (on the stack, not including receiver)
+  // rdi : the target to call
+  // rbx : arguments list (FixedArray)
+  // rcx : arguments list length (untagged)
+  Register registers[] = {rdi, rax, rbx, rcx};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -164,6 +132,34 @@ void CallForwardVarargsDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
+void CallWithSpreadDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // rax : number of arguments (on the stack, not including receiver)
+  // rdi : the target to call
+  // rbx : the object to spread
+  Register registers[] = {rdi, rax, rbx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void CallWithArrayLikeDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // rdi : the target to call
+  // rbx : the arguments list
+  Register registers[] = {rdi, rbx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void ConstructVarargsDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // rax : number of arguments (on the stack, not including receiver)
+  // rdi : the target to call
+  // rdx : the new target
+  // rbx : arguments list (FixedArray)
+  // rcx : arguments list length (untagged)
+  Register registers[] = {rdi, rdx, rax, rbx, rcx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
 void ConstructForwardVarargsDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // rax : number of arguments
@@ -171,6 +167,25 @@ void ConstructForwardVarargsDescriptor::InitializePlatformSpecific(
   // rcx : start index (to support rest parameters)
   // rdi : the target to call
   Register registers[] = {rdi, rdx, rax, rcx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void ConstructWithSpreadDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // rax : number of arguments (on the stack, not including receiver)
+  // rdi : the target to call
+  // rdx : the new target
+  // rbx : the object to spread
+  Register registers[] = {rdi, rdx, rax, rbx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void ConstructWithArrayLikeDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // rdi : the target to call
+  // rdx : the new target
+  // rbx : the arguments list
+  Register registers[] = {rdi, rdx, rbx};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -346,17 +361,6 @@ void InterpreterPushArgsThenConstructDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
-void InterpreterPushArgsThenConstructArrayDescriptor::
-    InitializePlatformSpecific(CallInterfaceDescriptorData* data) {
-  Register registers[] = {
-      rax,  // argument count (not including receiver)
-      rdx,  // target to the call. It is checked to be Array function.
-      rbx,  // allocation site feedback
-      rcx,  // address of first argument
-  };
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
 void InterpreterCEntryDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {
@@ -372,8 +376,7 @@ void ResumeGeneratorDescriptor::InitializePlatformSpecific(
   Register registers[] = {
       rax,  // the value to pass to the generator
       rbx,  // the JSGeneratorObject / JSAsyncGeneratorObject to resume
-      rdx,  // the resume mode (tagged)
-      rcx   // SuspendFlags (tagged)
+      rdx   // the resume mode (tagged)
   };
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }

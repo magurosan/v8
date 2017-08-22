@@ -228,6 +228,7 @@ namespace compiler {
   V(ArmI8x16GtU)                   \
   V(ArmI8x16GeU)                   \
   V(ArmS128Zero)                   \
+  V(ArmS128Dup)                    \
   V(ArmS128And)                    \
   V(ArmS128Or)                     \
   V(ArmS128Xor)                    \
@@ -246,7 +247,6 @@ namespace compiler {
   V(ArmS16x8UnzipRight)            \
   V(ArmS16x8TransposeLeft)         \
   V(ArmS16x8TransposeRight)        \
-  V(ArmS16x8Shuffle)               \
   V(ArmS8x16ZipLeft)               \
   V(ArmS8x16ZipRight)              \
   V(ArmS8x16UnzipLeft)             \

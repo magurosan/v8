@@ -22,7 +22,7 @@ Handle<LayoutDescriptor> LayoutDescriptor::New(Isolate* isolate, int length) {
   }
   int backing_store_length = GetSlowModeBackingStoreLength(length);
   Handle<LayoutDescriptor> result = Handle<LayoutDescriptor>::cast(
-      isolate->factory()->NewByteArray(backing_store_length));
+      isolate->factory()->NewByteArray(backing_store_length, TENURED));
   memset(result->GetDataStartAddress(), 0, result->DataSize());
   return result;
 }
@@ -83,7 +83,7 @@ LayoutDescriptor* LayoutDescriptor::SetTagged(int field_index, bool tagged) {
     set_layout_word(layout_word_index, value);
     return this;
   } else {
-    uint32_t value = static_cast<uint32_t>(Smi::cast(this)->value());
+    uint32_t value = static_cast<uint32_t>(Smi::ToInt(this));
     if (tagged) {
       value &= ~layout_mask;
     } else {
@@ -110,7 +110,7 @@ bool LayoutDescriptor::IsTagged(int field_index) {
     uint32_t value = get_layout_word(layout_word_index);
     return (value & layout_mask) == 0;
   } else {
-    uint32_t value = static_cast<uint32_t>(Smi::cast(this)->value());
+    uint32_t value = static_cast<uint32_t>(Smi::ToInt(this));
     return (value & layout_mask) == 0;
   }
 }
@@ -135,18 +135,11 @@ int LayoutDescriptor::capacity() {
 
 
 LayoutDescriptor* LayoutDescriptor::cast_gc_safe(Object* object) {
-  if (object->IsSmi()) {
-    // Fast mode layout descriptor.
-    return reinterpret_cast<LayoutDescriptor*>(object);
-  }
-
-  // This is a mixed descriptor which is a fixed typed array.
-  MapWord map_word = reinterpret_cast<HeapObject*>(object)->map_word();
-  if (map_word.IsForwardingAddress()) {
-    // Mark-compact has already moved layout descriptor.
-    object = map_word.ToForwardingAddress();
-  }
-  return LayoutDescriptor::cast(object);
+  // The map word of the object can be a forwarding pointer during
+  // object evacuation phase of GC. Since the layout descriptor methods
+  // for checking whether a field is tagged or not do not depend on the
+  // object map, it should be safe.
+  return reinterpret_cast<LayoutDescriptor*>(object);
 }
 
 int LayoutDescriptor::GetSlowModeBackingStoreLength(int length) {

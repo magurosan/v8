@@ -536,15 +536,9 @@ void EffectControlLinearizer::ProcessNode(Node* node, Node** frame_state,
     return;
   }
 
-  if (node->opcode() == IrOpcode::kIfSuccess) {
-    // We always schedule IfSuccess with its call, so skip it here.
-    DCHECK_EQ(IrOpcode::kCall, node->InputAt(0)->opcode());
-    // The IfSuccess node should not belong to an exceptional call node
-    // because such IfSuccess nodes should only start a basic block (and
-    // basic block start nodes are not handled in the ProcessNode method).
-    DCHECK(!NodeProperties::IsExceptionalCall(node->InputAt(0)));
-    return;
-  }
+  // The IfSuccess nodes should always start a basic block (and basic block
+  // start nodes are not handled in the ProcessNode method).
+  DCHECK_NE(IrOpcode::kIfSuccess, node->opcode());
 
   // If the node takes an effect, replace with the current one.
   if (node->op()->EffectInputCount() > 0) {
@@ -715,6 +709,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kCheckedTruncateTaggedToWord32:
       result = LowerCheckedTruncateTaggedToWord32(node, frame_state);
       break;
+    case IrOpcode::kObjectIsCallable:
+      result = LowerObjectIsCallable(node);
+      break;
     case IrOpcode::kObjectIsDetectableCallable:
       result = LowerObjectIsDetectableCallable(node);
       break;
@@ -772,6 +769,12 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kSeqStringCharCodeAt:
       result = LowerSeqStringCharCodeAt(node);
       break;
+    case IrOpcode::kStringToLowerCaseIntl:
+      result = LowerStringToLowerCaseIntl(node);
+      break;
+    case IrOpcode::kStringToUpperCaseIntl:
+      result = LowerStringToUpperCaseIntl(node);
+      break;
     case IrOpcode::kStringEqual:
       result = LowerStringEqual(node);
       break;
@@ -783,9 +786,6 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kCheckFloat64Hole:
       result = LowerCheckFloat64Hole(node, frame_state);
-      break;
-    case IrOpcode::kCheckTaggedHole:
-      result = LowerCheckTaggedHole(node, frame_state);
       break;
     case IrOpcode::kCheckNotTaggedHole:
       result = LowerCheckNotTaggedHole(node, frame_state);
@@ -816,6 +816,14 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kStoreTypedElement:
       LowerStoreTypedElement(node);
+      break;
+    case IrOpcode::kLookupHashStorageIndex:
+      result = LowerLookupHashStorageIndex(node);
+      break;
+    case IrOpcode::kLoadHashMapValue:
+      result = LowerLoadHashMapValue(node);
+    case IrOpcode::kTransitionAndStoreElement:
+      LowerTransitionAndStoreElement(node);
       break;
     case IrOpcode::kFloat64RoundUp:
       if (!LowerFloat64RoundUp(node).To(&result)) {
@@ -1834,6 +1842,30 @@ Node* EffectControlLinearizer::LowerCheckedTruncateTaggedToWord32(
   return done.PhiAt(0);
 }
 
+Node* EffectControlLinearizer::LowerObjectIsCallable(Node* node) {
+  Node* value = node->InputAt(0);
+
+  auto if_smi = __ MakeDeferredLabel<1>();
+  auto done = __ MakeLabel<2>(MachineRepresentation::kBit);
+
+  Node* check = ObjectIsSmi(value);
+  __ GotoIf(check, &if_smi);
+
+  Node* value_map = __ LoadField(AccessBuilder::ForMap(), value);
+  Node* value_bit_field =
+      __ LoadField(AccessBuilder::ForMapBitField(), value_map);
+  Node* vfalse = __ Word32Equal(
+      __ Int32Constant(1 << Map::kIsCallable),
+      __ Word32And(value_bit_field, __ Int32Constant(1 << Map::kIsCallable)));
+  __ Goto(&done, vfalse);
+
+  __ Bind(&if_smi);
+  __ Goto(&done, __ Int32Constant(0));
+
+  __ Bind(&done);
+  return done.PhiAt(0);
+}
+
 Node* EffectControlLinearizer::LowerObjectIsDetectableCallable(Node* node) {
   Node* value = node->InputAt(0);
 
@@ -2108,7 +2140,7 @@ Node* EffectControlLinearizer::LowerNewUnmappedArgumentsElements(Node* node) {
   Node* length = NodeProperties::GetValueInput(node, 1);
 
   Callable const callable =
-      CodeFactory::NewUnmappedArgumentsElements(isolate());
+      Builtins::CallableFor(isolate(), Builtins::kNewUnmappedArgumentsElements);
   Operator::Properties const properties = node->op()->properties();
   CallDescriptor::Flags const flags = CallDescriptor::kNoFlags;
   CallDescriptor* desc = Linkage::GetStubCallDescriptor(
@@ -2234,6 +2266,46 @@ Node* EffectControlLinearizer::LowerStringFromCharCode(Node* node) {
   __ Bind(&done);
   return done.PhiAt(0);
 }
+
+#ifdef V8_INTL_SUPPORT
+
+Node* EffectControlLinearizer::LowerStringToLowerCaseIntl(Node* node) {
+  Node* receiver = node->InputAt(0);
+
+  Callable callable =
+      Builtins::CallableFor(isolate(), Builtins::kStringToLowerCaseIntl);
+  Operator::Properties properties = Operator::kNoDeopt | Operator::kNoThrow;
+  CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
+  CallDescriptor* desc = Linkage::GetStubCallDescriptor(
+      isolate(), graph()->zone(), callable.descriptor(), 0, flags, properties);
+  return __ Call(desc, __ HeapConstant(callable.code()), receiver,
+                 __ NoContextConstant());
+}
+
+Node* EffectControlLinearizer::LowerStringToUpperCaseIntl(Node* node) {
+  Node* receiver = node->InputAt(0);
+  Operator::Properties properties = Operator::kNoDeopt | Operator::kNoThrow;
+  Runtime::FunctionId id = Runtime::kStringToUpperCaseIntl;
+  CallDescriptor const* desc = Linkage::GetRuntimeCallDescriptor(
+      graph()->zone(), id, 1, properties, CallDescriptor::kNoFlags);
+  return __ Call(desc, __ CEntryStubConstant(1), receiver,
+                 __ ExternalConstant(ExternalReference(id, isolate())),
+                 __ Int32Constant(1), __ NoContextConstant());
+}
+
+#else
+
+Node* EffectControlLinearizer::LowerStringToLowerCaseIntl(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
+
+Node* EffectControlLinearizer::LowerStringToUpperCaseIntl(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
+
+#endif  // V8_INTL_SUPPORT
 
 Node* EffectControlLinearizer::LowerStringFromCodePoint(Node* node) {
   Node* value = node->InputAt(0);
@@ -2365,7 +2437,8 @@ Node* EffectControlLinearizer::LowerStringIndexOf(Node* node) {
   Node* search_string = node->InputAt(1);
   Node* position = node->InputAt(2);
 
-  Callable callable = CodeFactory::StringIndexOf(isolate());
+  Callable callable =
+      Builtins::CallableFor(isolate(), Builtins::kStringIndexOf);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   CallDescriptor* desc = Linkage::GetStubCallDescriptor(
@@ -2414,13 +2487,6 @@ Node* EffectControlLinearizer::LowerCheckFloat64Hole(Node* node,
   return value;
 }
 
-Node* EffectControlLinearizer::LowerCheckTaggedHole(Node* node,
-                                                    Node* frame_state) {
-  Node* value = node->InputAt(0);
-  Node* check = __ WordEqual(value, __ TheHoleConstant());
-  __ DeoptimizeUnless(DeoptimizeReason::kHole, check, frame_state);
-  return value;
-}
 
 Node* EffectControlLinearizer::LowerCheckNotTaggedHole(Node* node,
                                                        Node* frame_state) {
@@ -2568,7 +2634,8 @@ Node* EffectControlLinearizer::LowerEnsureWritableFastElements(Node* node) {
   __ Bind(&if_not_fixed_array);
   // We need to take a copy of the {elements} and set them up for {object}.
   Operator::Properties properties = Operator::kEliminatable;
-  Callable callable = CodeFactory::CopyFastSmiOrObjectElements(isolate());
+  Callable callable =
+      Builtins::CallableFor(isolate(), Builtins::kCopyFastSmiOrObjectElements);
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   CallDescriptor const* const desc = Linkage::GetStubCallDescriptor(
       isolate(), graph()->zone(), callable.descriptor(), 0, flags, properties);
@@ -2613,8 +2680,10 @@ Node* EffectControlLinearizer::LowerMaybeGrowFastElements(Node* node,
     Operator::Properties properties = Operator::kEliminatable;
     Callable callable =
         (flags & GrowFastElementsFlag::kDoubleElements)
-            ? CodeFactory::GrowFastDoubleElements(isolate())
-            : CodeFactory::GrowFastSmiOrObjectElements(isolate());
+            ? Builtins::CallableFor(isolate(),
+                                    Builtins::kGrowFastDoubleElements)
+            : Builtins::CallableFor(isolate(),
+                                    Builtins::kGrowFastSmiOrObjectElements);
     CallDescriptor::Flags call_flags = CallDescriptor::kNoFlags;
     CallDescriptor const* const desc = Linkage::GetStubCallDescriptor(
         isolate(), graph()->zone(), callable.descriptor(), 0, call_flags,
@@ -2638,7 +2707,7 @@ Node* EffectControlLinearizer::LowerMaybeGrowFastElements(Node* node,
           ChangeInt32ToSmi(__ Int32Add(index, __ Int32Constant(1)));
 
       // Update the "length" property of the {object}.
-      __ StoreField(AccessBuilder::ForJSArrayLength(FAST_ELEMENTS), object,
+      __ StoreField(AccessBuilder::ForJSArrayLength(PACKED_ELEMENTS), object,
                     object_length);
     }
     __ Goto(&done, done_grow.PhiAt(0));
@@ -2743,6 +2812,171 @@ void EffectControlLinearizer::LowerStoreTypedElement(Node* node) {
   // Perform the actual typed element access.
   __ StoreElement(AccessBuilder::ForTypedArrayElement(array_type, true),
                   storage, index, value);
+}
+
+void EffectControlLinearizer::TransitionElementsTo(Node* node, Node* array,
+                                                   ElementsKind from,
+                                                   ElementsKind to) {
+  DCHECK(IsMoreGeneralElementsKindTransition(from, to));
+  DCHECK(to == HOLEY_ELEMENTS || to == HOLEY_DOUBLE_ELEMENTS);
+
+  Handle<Map> target(to == HOLEY_ELEMENTS ? FastMapParameterOf(node->op())
+                                          : DoubleMapParameterOf(node->op()));
+  Node* target_map = __ HeapConstant(target);
+
+  if (IsSimpleMapChangeTransition(from, to)) {
+    __ StoreField(AccessBuilder::ForMap(), array, target_map);
+  } else {
+    // Instance migration, call out to the runtime for {array}.
+    Operator::Properties properties = Operator::kNoDeopt | Operator::kNoThrow;
+    Runtime::FunctionId id = Runtime::kTransitionElementsKind;
+    CallDescriptor const* desc = Linkage::GetRuntimeCallDescriptor(
+        graph()->zone(), id, 2, properties, CallDescriptor::kNoFlags);
+    __ Call(desc, __ CEntryStubConstant(1), array, target_map,
+            __ ExternalConstant(ExternalReference(id, isolate())),
+            __ Int32Constant(2), __ NoContextConstant());
+  }
+}
+
+Node* EffectControlLinearizer::IsElementsKindGreaterThan(
+    Node* kind, ElementsKind reference_kind) {
+  Node* ref_kind = __ Int32Constant(reference_kind);
+  Node* ret = __ Int32LessThan(ref_kind, kind);
+  return ret;
+}
+
+void EffectControlLinearizer::LowerTransitionAndStoreElement(Node* node) {
+  Node* array = node->InputAt(0);
+  Node* index = node->InputAt(1);
+  Node* value = node->InputAt(2);
+
+  // Possibly transition array based on input and store.
+  //
+  //   -- TRANSITION PHASE -----------------
+  //   kind = ElementsKind(array)
+  //   if value is not smi {
+  //     if kind == HOLEY_SMI_ELEMENTS {
+  //       if value is heap number {
+  //         Transition array to HOLEY_DOUBLE_ELEMENTS
+  //         kind = HOLEY_DOUBLE_ELEMENTS
+  //       } else {
+  //         Transition array to HOLEY_ELEMENTS
+  //         kind = HOLEY_ELEMENTS
+  //       }
+  //     } else if kind == HOLEY_DOUBLE_ELEMENTS {
+  //       if value is not heap number {
+  //         Transition array to HOLEY_ELEMENTS
+  //         kind = HOLEY_ELEMENTS
+  //       }
+  //     }
+  //   }
+  //
+  //   -- STORE PHASE ----------------------
+  //   [make sure {kind} is up-to-date]
+  //   if kind == HOLEY_DOUBLE_ELEMENTS {
+  //     if value is smi {
+  //       float_value = convert smi to float
+  //       Store array[index] = float_value
+  //     } else {
+  //       float_value = value
+  //       Store array[index] = float_value
+  //     }
+  //   } else {
+  //     // kind is HOLEY_SMI_ELEMENTS or HOLEY_ELEMENTS
+  //     Store array[index] = value
+  //   }
+  //
+  Node* map = __ LoadField(AccessBuilder::ForMap(), array);
+  Node* kind;
+  {
+    Node* bit_field2 = __ LoadField(AccessBuilder::ForMapBitField2(), map);
+    Node* mask = __ Int32Constant(Map::ElementsKindBits::kMask);
+    Node* andit = __ Word32And(bit_field2, mask);
+    Node* shift = __ Int32Constant(Map::ElementsKindBits::kShift);
+    kind = __ Word32Shr(andit, shift);
+  }
+
+  auto do_store = __ MakeLabel<6>(MachineRepresentation::kWord32);
+  Node* check1 = ObjectIsSmi(value);
+  __ GotoIf(check1, &do_store, kind);
+  {
+    // {value} is a HeapObject.
+    Node* check2 = IsElementsKindGreaterThan(kind, HOLEY_SMI_ELEMENTS);
+    auto if_array_not_fast_smi = __ MakeLabel<1>();
+    __ GotoIf(check2, &if_array_not_fast_smi);
+    {
+      // Transition {array} from HOLEY_SMI_ELEMENTS to HOLEY_DOUBLE_ELEMENTS or
+      // to HOLEY_ELEMENTS.
+      Node* value_map = __ LoadField(AccessBuilder::ForMap(), value);
+      Node* heap_number_map = __ HeapNumberMapConstant();
+      Node* check3 = __ WordEqual(value_map, heap_number_map);
+      auto if_value_not_heap_number = __ MakeLabel<1>();
+      __ GotoUnless(check3, &if_value_not_heap_number);
+      {
+        // {value} is a HeapNumber.
+        TransitionElementsTo(node, array, HOLEY_SMI_ELEMENTS,
+                             HOLEY_DOUBLE_ELEMENTS);
+        __ Goto(&do_store, __ Int32Constant(HOLEY_DOUBLE_ELEMENTS));
+      }
+      __ Bind(&if_value_not_heap_number);
+      {
+        TransitionElementsTo(node, array, HOLEY_SMI_ELEMENTS, HOLEY_ELEMENTS);
+        __ Goto(&do_store, __ Int32Constant(HOLEY_ELEMENTS));
+      }
+    }
+    __ Bind(&if_array_not_fast_smi);
+    {
+      Node* check3 = IsElementsKindGreaterThan(kind, HOLEY_ELEMENTS);
+      __ GotoUnless(check3, &do_store, kind);
+      // We have double elements kind.
+      Node* value_map = __ LoadField(AccessBuilder::ForMap(), value);
+      Node* heap_number_map = __ HeapNumberMapConstant();
+      Node* check4 = __ WordEqual(value_map, heap_number_map);
+      __ GotoIf(check4, &do_store, kind);
+      // But the value is not a heap number, so we must transition.
+      TransitionElementsTo(node, array, HOLEY_DOUBLE_ELEMENTS, HOLEY_ELEMENTS);
+      __ Goto(&do_store, __ Int32Constant(HOLEY_ELEMENTS));
+    }
+  }
+
+  // Make sure kind is up-to-date.
+  __ Bind(&do_store);
+  kind = do_store.PhiAt(0);
+
+  Node* elements = __ LoadField(AccessBuilder::ForJSObjectElements(), array);
+  Node* check2 = IsElementsKindGreaterThan(kind, HOLEY_ELEMENTS);
+  auto if_kind_is_double = __ MakeLabel<1>();
+  auto done = __ MakeLabel<3>();
+  __ GotoIf(check2, &if_kind_is_double);
+  {
+    // Our ElementsKind is HOLEY_SMI_ELEMENTS or HOLEY_ELEMENTS.
+    __ StoreElement(AccessBuilder::ForFixedArrayElement(HOLEY_ELEMENTS),
+                    elements, index, value);
+    __ Goto(&done);
+  }
+  __ Bind(&if_kind_is_double);
+  {
+    // Our ElementsKind is HOLEY_DOUBLE_ELEMENTS.
+    Node* check1 = ObjectIsSmi(value);
+    auto do_double_store = __ MakeLabel<1>();
+    __ GotoUnless(check1, &do_double_store);
+    {
+      Node* int_value = ChangeSmiToInt32(value);
+      Node* float_value = __ ChangeInt32ToFloat64(int_value);
+      __ StoreElement(AccessBuilder::ForFixedDoubleArrayElement(), elements,
+                      index, float_value);
+      __ Goto(&done);
+    }
+    __ Bind(&do_double_store);
+    {
+      Node* float_value =
+          __ LoadField(AccessBuilder::ForHeapNumberValue(), value);
+      __ StoreElement(AccessBuilder::ForFixedDoubleArrayElement(), elements,
+                      index, float_value);
+      __ Goto(&done);
+    }
+  }
+  __ Bind(&done);
 }
 
 Maybe<Node*> EffectControlLinearizer::LowerFloat64RoundUp(Node* node) {
@@ -3069,6 +3303,29 @@ Maybe<Node*> EffectControlLinearizer::LowerFloat64RoundTruncate(Node* node) {
   }
   __ Bind(&done);
   return Just(done.PhiAt(0));
+}
+
+Node* EffectControlLinearizer::LowerLookupHashStorageIndex(Node* node) {
+  Node* table = NodeProperties::GetValueInput(node, 0);
+  Node* key = NodeProperties::GetValueInput(node, 1);
+
+  {
+    Callable const callable =
+        Builtins::CallableFor(isolate(), Builtins::kMapLookupHashIndex);
+    Operator::Properties const properties = node->op()->properties();
+    CallDescriptor::Flags const flags = CallDescriptor::kNoFlags;
+    CallDescriptor* desc = Linkage::GetStubCallDescriptor(
+        isolate(), graph()->zone(), callable.descriptor(), 0, flags,
+        properties);
+    return __ Call(desc, __ HeapConstant(callable.code()), table, key,
+                   __ NoContextConstant());
+  }
+}
+
+Node* EffectControlLinearizer::LowerLoadHashMapValue(Node* node) {
+  Node* table = NodeProperties::GetValueInput(node, 0);
+  Node* index = NodeProperties::GetValueInput(node, 1);
+  return __ LoadElement(AccessBuilder::ForFixedArrayElement(), table, index);
 }
 
 #undef __

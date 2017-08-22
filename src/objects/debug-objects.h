@@ -20,7 +20,8 @@ class DebugInfo : public Struct {
   enum Flag {
     kNone = 0,
     kHasBreakInfo = 1 << 0,
-    kHasCoverageInfo = 1 << 1,
+    kPreparedForBreakpoints = 1 << 1,
+    kHasCoverageInfo = 2 << 1,
   };
   typedef base::Flags<Flag> Flags;
 
@@ -40,6 +41,8 @@ class DebugInfo : public Struct {
   // --------------------
 
   bool HasBreakInfo() const;
+
+  bool IsPreparedForBreakpoints() const;
 
   // Clears all fields related to break points. Returns true iff the
   // DebugInfo is now empty.
@@ -84,11 +87,11 @@ class DebugInfo : public Struct {
   bool ClearCoverageInfo();
   DECL_ACCESSORS(coverage_info, Object)
 
-  DECLARE_CAST(DebugInfo)
+  DECL_CAST(DebugInfo)
 
   // Dispatched behavior.
-  DECLARE_PRINTER(DebugInfo)
-  DECLARE_VERIFIER(DebugInfo)
+  DECL_PRINTER(DebugInfo)
+  DECL_VERIFIER(DebugInfo)
 
   static const int kSharedFunctionInfoOffset = Struct::kHeaderSize;
   static const int kDebuggerHintsOffset =
@@ -134,7 +137,7 @@ class BreakPointInfo : public Tuple2 {
 
   int GetStatementPosition(Handle<DebugInfo> debug_info);
 
-  DECLARE_CAST(BreakPointInfo)
+  DECL_CAST(BreakPointInfo)
 
   static const int kSourcePositionOffset = kValue1Offset;
   static const int kBreakPointObjectsOffset = kValue2Offset;
@@ -154,12 +157,16 @@ class CoverageInfo : public FixedArray {
 
   void InitializeSlot(int slot_index, int start_pos, int end_pos);
   void IncrementBlockCount(int slot_index);
+  void ResetBlockCount(int slot_index);
 
   static int FixedArrayLengthForSlotCount(int slot_count) {
     return slot_count * kSlotIndexCount + kFirstSlotIndex;
   }
 
-  DECLARE_CAST(CoverageInfo)
+  DECL_CAST(CoverageInfo)
+
+  // Print debug info.
+  void Print(String* function_name);
 
  private:
   static int FirstIndexForSlot(int slot_index) {
@@ -176,6 +183,21 @@ class CoverageInfo : public FixedArray {
   static const int kSlotIndexCount = 3;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(CoverageInfo);
+};
+
+// Holds breakpoint related information. This object is used by inspector.
+class BreakPoint : public Tuple2 {
+ public:
+  DECL_INT_ACCESSORS(id)
+  DECL_ACCESSORS(condition, String)
+
+  DECL_CAST(BreakPoint)
+
+  static const int kIdOffset = kValue1Offset;
+  static const int kConditionOffset = kValue2Offset;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(BreakPoint);
 };
 
 }  // namespace internal

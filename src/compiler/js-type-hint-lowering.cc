@@ -256,14 +256,33 @@ Reduction JSTypeHintLowering::ReduceToNumberOperation(Node* input, Node* effect,
   return Reduction();
 }
 
-Reduction JSTypeHintLowering::ReduceToPrimitiveToStringOperation(
-    Node* input, Node* effect, Node* control, FeedbackSlot slot) const {
+Reduction JSTypeHintLowering::ReduceCallOperation(const Operator* op,
+                                                  Node* const* args,
+                                                  int arg_count, Node* effect,
+                                                  Node* control,
+                                                  FeedbackSlot slot) const {
+  DCHECK(op->opcode() == IrOpcode::kJSCall ||
+         op->opcode() == IrOpcode::kJSCallWithSpread);
   DCHECK(!slot.IsInvalid());
-  BinaryOpICNexus nexus(feedback_vector(), slot);
-  BinaryOperationHint hint = nexus.GetBinaryOperationFeedback();
-  if (hint == BinaryOperationHint::kString) {
-    Node* node = jsgraph()->graph()->NewNode(
-        jsgraph()->simplified()->CheckString(), input, effect, control);
+  CallICNexus nexus(feedback_vector(), slot);
+  if (Node* node = TryBuildSoftDeopt(
+          nexus, effect, control,
+          DeoptimizeReason::kInsufficientTypeFeedbackForCall)) {
+    return Reduction(node);
+  }
+  return Reduction();
+}
+
+Reduction JSTypeHintLowering::ReduceConstructOperation(
+    const Operator* op, Node* const* args, int arg_count, Node* effect,
+    Node* control, FeedbackSlot slot) const {
+  DCHECK(op->opcode() == IrOpcode::kJSConstruct ||
+         op->opcode() == IrOpcode::kJSConstructWithSpread);
+  DCHECK(!slot.IsInvalid());
+  CallICNexus nexus(feedback_vector(), slot);
+  if (Node* node = TryBuildSoftDeopt(
+          nexus, effect, control,
+          DeoptimizeReason::kInsufficientTypeFeedbackForConstruct)) {
     return Reduction(node);
   }
   return Reduction();

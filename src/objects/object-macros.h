@@ -20,12 +20,16 @@
   inline int name() const;       \
   inline void set_##name(int value);
 
+#define DECL_INT32_ACCESSORS(name) \
+  inline int32_t name() const;     \
+  inline void set_##name(int32_t value);
+
 #define DECL_ACCESSORS(name, type)    \
   inline type* name() const;          \
   inline void set_##name(type* value, \
                          WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
-#define DECLARE_CAST(type)                   \
+#define DECL_CAST(type)                      \
   INLINE(static type* cast(Object* object)); \
   INLINE(static const type* cast(const Object* object));
 
@@ -42,6 +46,12 @@
 #define INT_ACCESSORS(holder, name, offset)                         \
   int holder::name() const { return READ_INT_FIELD(this, offset); } \
   void holder::set_##name(int value) { WRITE_INT_FIELD(this, offset, value); }
+
+#define INT32_ACCESSORS(holder, name, offset)                             \
+  int32_t holder::name() const { return READ_INT32_FIELD(this, offset); } \
+  void holder::set_##name(int32_t value) {                                \
+    WRITE_INT32_FIELD(this, offset, value);                               \
+  }
 
 #define ACCESSORS_CHECKED2(holder, name, type, offset, get_condition, \
                            set_condition)                             \
@@ -65,7 +75,7 @@
   int holder::name() const {                                   \
     DCHECK(condition);                                         \
     Object* value = READ_FIELD(this, offset);                  \
-    return Smi::cast(value)->value();                          \
+    return Smi::ToInt(value);                                  \
   }                                                            \
   void holder::set_##name(int value) {                         \
     DCHECK(condition);                                         \
@@ -78,7 +88,7 @@
 #define SYNCHRONIZED_SMI_ACCESSORS(holder, name, offset)    \
   int holder::synchronized_##name() const {                 \
     Object* value = ACQUIRE_READ_FIELD(this, offset);       \
-    return Smi::cast(value)->value();                       \
+    return Smi::ToInt(value);                               \
   }                                                         \
   void holder::synchronized_set_##name(int value) {         \
     RELEASE_WRITE_FIELD(this, offset, Smi::FromInt(value)); \
@@ -87,7 +97,7 @@
 #define RELAXED_SMI_ACCESSORS(holder, name, offset)         \
   int holder::relaxed_read_##name() const {                 \
     Object* value = RELAXED_READ_FIELD(this, offset);       \
-    return Smi::cast(value)->value();                       \
+    return Smi::ToInt(value);                               \
   }                                                         \
   void holder::relaxed_write_##name(int value) {            \
     RELAXED_WRITE_FIELD(this, offset, Smi::FromInt(value)); \
@@ -100,6 +110,14 @@
   bool holder::name() const { return BooleanBit::get(field(), offset); } \
   void holder::set_##name(bool value) {                                  \
     set_##field(BooleanBit::set(field(), offset, value));                \
+  }
+
+#define BIT_FIELD_ACCESSORS(holder, field, name, BitField)      \
+  typename BitField::FieldType holder::name() const {           \
+    return BitField::decode(field());                           \
+  }                                                             \
+  void holder::set_##name(typename BitField::FieldType value) { \
+    set_##field(BitField::update(field(), value));              \
   }
 
 #define TYPE_CHECKER(type, instancetype)           \
@@ -147,15 +165,15 @@
 #define WRITE_BARRIER(heap, object, offset, value)          \
   heap->incremental_marking()->RecordWrite(                 \
       object, HeapObject::RawField(object, offset), value); \
-  heap->RecordWrite(object, offset, value);
+  heap->RecordWrite(object, HeapObject::RawField(object, offset), value);
 
-#define CONDITIONAL_WRITE_BARRIER(heap, object, offset, value, mode) \
-  if (mode != SKIP_WRITE_BARRIER) {                                  \
-    if (mode == UPDATE_WRITE_BARRIER) {                              \
-      heap->incremental_marking()->RecordWrite(                      \
-          object, HeapObject::RawField(object, offset), value);      \
-    }                                                                \
-    heap->RecordWrite(object, offset, value);                        \
+#define CONDITIONAL_WRITE_BARRIER(heap, object, offset, value, mode)        \
+  if (mode != SKIP_WRITE_BARRIER) {                                         \
+    if (mode == UPDATE_WRITE_BARRIER) {                                     \
+      heap->incremental_marking()->RecordWrite(                             \
+          object, HeapObject::RawField(object, offset), value);             \
+    }                                                                       \
+    heap->RecordWrite(object, HeapObject::RawField(object, offset), value); \
   }
 
 #define READ_DOUBLE_FIELD(p, offset) \
@@ -170,8 +188,17 @@
 #define WRITE_INT_FIELD(p, offset, value) \
   (*reinterpret_cast<int*>(FIELD_ADDR(p, offset)) = value)
 
+#define RELAXED_READ_INTPTR_FIELD(p, offset) \
+  static_cast<intptr_t>(base::Relaxed_Load(  \
+      reinterpret_cast<const base::AtomicWord*>(FIELD_ADDR_CONST(p, offset))))
+
 #define READ_INTPTR_FIELD(p, offset) \
   (*reinterpret_cast<const intptr_t*>(FIELD_ADDR_CONST(p, offset)))
+
+#define RELAXED_WRITE_INTPTR_FIELD(p, offset, value)              \
+  base::Relaxed_Store(                                            \
+      reinterpret_cast<base::AtomicWord*>(FIELD_ADDR(p, offset)), \
+      static_cast<base::AtomicWord>(value));
 
 #define WRITE_INTPTR_FIELD(p, offset, value) \
   (*reinterpret_cast<intptr_t*>(FIELD_ADDR(p, offset)) = value)
@@ -235,7 +262,7 @@
 
 #define RELAXED_READ_BYTE_FIELD(p, offset) \
   static_cast<byte>(base::Relaxed_Load(    \
-      reinterpret_cast<base::Atomic8*>(FIELD_ADDR(p, offset))))
+      reinterpret_cast<const base::Atomic8*>(FIELD_ADDR_CONST(p, offset))))
 
 #define WRITE_BYTE_FIELD(p, offset, value) \
   (*reinterpret_cast<byte*>(FIELD_ADDR(p, offset)) = value)
@@ -245,9 +272,9 @@
                       static_cast<base::Atomic8>(value));
 
 #ifdef VERIFY_HEAP
-#define DECLARE_VERIFIER(Name) void Name##Verify();
+#define DECL_VERIFIER(Name) void Name##Verify();
 #else
-#define DECLARE_VERIFIER(Name)
+#define DECL_VERIFIER(Name)
 #endif
 
 #define DEFINE_DEOPT_ELEMENT_ACCESSORS(name, type)       \

@@ -17,19 +17,14 @@ namespace internal {
 namespace compiler {
 
 size_t hash_value(OutputFrameStateCombine const& sc) {
-  return base::hash_combine(sc.kind_, sc.parameter_);
+  return base::hash_value(sc.parameter_);
 }
 
 
 std::ostream& operator<<(std::ostream& os, OutputFrameStateCombine const& sc) {
-  switch (sc.kind_) {
-    case OutputFrameStateCombine::kPushOutput:
-      if (sc.parameter_ == 0) return os << "Ignore";
-      return os << "Push(" << sc.parameter_ << ")";
-    case OutputFrameStateCombine::kPokeAt:
-      return os << "PokeAt(" << sc.parameter_ << ")";
-  }
-  UNREACHABLE();
+  if (sc.parameter_ == OutputFrameStateCombine::kInvalidIndex)
+    return os << "Ignore";
+  return os << "PokeAt(" << sc.parameter_ << ")";
 }
 
 
@@ -53,17 +48,11 @@ size_t hash_value(FrameStateInfo const& info) {
 
 std::ostream& operator<<(std::ostream& os, FrameStateType type) {
   switch (type) {
-    case FrameStateType::kJavaScriptFunction:
-      os << "JS_FRAME";
-      break;
     case FrameStateType::kInterpretedFunction:
       os << "INTERPRETED_FRAME";
       break;
     case FrameStateType::kArgumentsAdaptor:
       os << "ARGUMENTS_ADAPTOR";
-      break;
-    case FrameStateType::kTailCallerFunction:
-      os << "TAIL_CALLER_FRAME";
       break;
     case FrameStateType::kConstructStub:
       os << "CONSTRUCT_STUB";
@@ -113,11 +102,11 @@ Node* CreateBuiltinContinuationFrameStateCommon(
   FrameStateType frame_type =
       function.is_null() ? FrameStateType::kBuiltinContinuation
                          : FrameStateType::kJavaScriptBuiltinContinuation;
-  Handle<SharedFunctionInfo> shared(
-      Handle<SharedFunctionInfo>(function->shared()));
   const FrameStateFunctionInfo* state_info =
-      common->CreateFrameStateFunctionInfo(frame_type, parameter_count, 0,
-                                           shared);
+      common->CreateFrameStateFunctionInfo(
+          frame_type, parameter_count, 0,
+          function.is_null() ? Handle<SharedFunctionInfo>()
+                             : Handle<SharedFunctionInfo>(function->shared()));
   const Operator* op = common->FrameState(
       bailout_id, OutputFrameStateCombine::Ignore(), state_info);
 
@@ -143,8 +132,12 @@ Node* CreateStubBuiltinContinuationFrameState(JSGraph* js_graph,
   CallInterfaceDescriptor descriptor = callable.descriptor();
 
   std::vector<Node*> actual_parameters;
-  // Stack parameters first
-  for (int i = 0; i < descriptor.GetStackParameterCount(); ++i) {
+  // Stack parameters first. If the deoptimization is LAZY, the final parameter
+  // is added by the deoptimizer and isn't explicitly passed in the frame state.
+  int stack_parameter_count =
+      descriptor.GetRegisterParameterCount() -
+      (mode == ContinuationFrameStateMode::LAZY ? 1 : 0);
+  for (int i = 0; i < stack_parameter_count; ++i) {
     actual_parameters.push_back(
         parameters[descriptor.GetRegisterParameterCount() + i]);
   }
@@ -155,7 +148,7 @@ Node* CreateStubBuiltinContinuationFrameState(JSGraph* js_graph,
   }
 
   return CreateBuiltinContinuationFrameStateCommon(
-      js_graph, name, context, &actual_parameters[0],
+      js_graph, name, context, actual_parameters.data(),
       static_cast<int>(actual_parameters.size()), outer_frame_state,
       Handle<JSFunction>());
 }
@@ -173,10 +166,9 @@ Node* CreateJavaScriptBuiltinContinuationFrameState(
   // the deoptimizer and not explicitly specified in the frame state. Check that
   // there is not a mismatch between the number of frame state parameters and
   // the stack parameters required by the builtin taking this into account.
-  DCHECK_EQ(
-      Builtins::GetStackParameterCount(isolate, name) + 1,  // add receiver
-      stack_parameter_count +
-          (mode == ContinuationFrameStateMode::EAGER ? 0 : 1));
+  DCHECK_EQ(Builtins::GetStackParameterCount(name) + 1,  // add receiver
+            stack_parameter_count +
+                (mode == ContinuationFrameStateMode::EAGER ? 0 : 1));
 
   Node* argc =
       js_graph->Constant(stack_parameter_count -

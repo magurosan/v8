@@ -139,6 +139,7 @@ template<typename T> class ReturnValue;
 
 namespace internal {
 class Arguments;
+class DeferredHandles;
 class Heap;
 class HeapObject;
 class Isolate;
@@ -1031,9 +1032,6 @@ class ScriptOrigin {
   V8_INLINE Local<Value> ResourceName() const;
   V8_INLINE Local<Integer> ResourceLineOffset() const;
   V8_INLINE Local<Integer> ResourceColumnOffset() const;
-  /**
-    * Returns true for embedder's debugger scripts
-    */
   V8_INLINE Local<Integer> ScriptID() const;
   V8_INLINE Local<Value> SourceMapUrl() const;
   V8_INLINE ScriptOriginOptions Options() const { return options_; }
@@ -1079,6 +1077,22 @@ class V8_EXPORT UnboundScript {
 };
 
 /**
+ * A location in JavaScript source.
+ */
+class V8_EXPORT Location {
+ public:
+  int GetLineNumber() { return line_number_; }
+  int GetColumnNumber() { return column_number_; }
+
+  Location(int line_number, int column_number)
+      : line_number_(line_number), column_number_(column_number) {}
+
+ private:
+  int line_number_;
+  int column_number_;
+};
+
+/**
  * This is an unfinished experimental feature, and is only exposed
  * here for internal testing purposes. DO NOT USE.
  *
@@ -1086,6 +1100,28 @@ class V8_EXPORT UnboundScript {
  */
 class V8_EXPORT Module {
  public:
+  /**
+   * The different states a module can be in.
+   */
+  enum Status {
+    kUninstantiated,
+    kInstantiating,
+    kInstantiated,
+    kEvaluating,
+    kEvaluated,
+    kErrored
+  };
+
+  /**
+   * Returns the module's current status.
+   */
+  Status GetStatus() const;
+
+  /**
+   * For a module in kErrored status, this returns the corresponding exception.
+   */
+  Local<Value> GetException() const;
+
   /**
    * Returns the number of modules requested by this module.
    */
@@ -1096,6 +1132,12 @@ class V8_EXPORT Module {
    * i must be < GetModuleRequestsLength() and >= 0.
    */
   Local<String> GetModuleRequest(int i) const;
+
+  /**
+   * Returns the source location (line number and column number) of the ith
+   * module specifier's first occurrence in this module.
+   */
+  Location GetModuleRequestLocation(int i) const;
 
   /**
    * Returns the identity hash for this object.
@@ -1123,30 +1165,15 @@ class V8_EXPORT Module {
    * ModuleEvaluation
    *
    * Returns the completion value.
+   * TODO(neis): Be more precise or say nothing.
    */
   V8_WARN_UNUSED_RESULT MaybeLocal<Value> Evaluate(Local<Context> context);
-};
-
-/**
- * This is an unfinished experimental feature, and is only exposed
- * here for internal testing purposes. DO NOT USE.
- *
- * A compiled JavaScript module.
- */
-class V8_EXPORT DynamicImportResult {
- public:
-  /**
-   * Resolves the promise with the namespace object of the given
-   * module.
-   */
-  V8_WARN_UNUSED_RESULT Maybe<bool> FinishDynamicImportSuccess(
-      Local<Context> context, Local<Module> module);
 
   /**
-   * Rejects the promise with the given exception.
+   * Returns the namespace object of this module. The module must have
+   * been successfully instantiated before and must not be errored.
    */
-  V8_WARN_UNUSED_RESULT Maybe<bool> FinishDynamicImportFailure(
-      Local<Context> context, Local<Value> exception);
+  Local<Value> GetModuleNamespace();
 };
 
 /**
@@ -1283,11 +1310,6 @@ class V8_EXPORT ScriptCompiler {
      * wait for the data, if the embedder doesn't have data yet. Returns the
      * length of the data returned. When the data ends, GetMoreData should
      * return 0. Caller takes ownership of the data.
-     *
-     * When streaming UTF-8 data, V8 handles multi-byte characters split between
-     * two data chunks, but doesn't handle multi-byte characters split between
-     * more than two data chunks. The embedder can avoid this problem by always
-     * returning at least 2 bytes of data.
      *
      * If the embedder wants to cancel the streaming, they should make the next
      * GetMoreData call return 0. V8 will interpret it as end of data (and most
@@ -2416,7 +2438,8 @@ enum class NewStringType {
  */
 class V8_EXPORT String : public Name {
  public:
-  static const int kMaxLength = (1 << 28) - 16;
+  static constexpr int kMaxLength =
+      sizeof(void*) == 4 ? (1 << 28) - 16 : (1 << 30) - 1 - 24;
 
   enum Encoding {
     UNKNOWN_ENCODING = 0x1,
@@ -4138,6 +4161,46 @@ class V8_EXPORT WasmCompiledModule : public Object {
   static void CheckCast(Value* obj);
 };
 
+// TODO(mtrofin): when streaming compilation is done, we can rename this
+// to simply WasmModuleObjectBuilder
+class V8_EXPORT WasmModuleObjectBuilderStreaming final {
+ public:
+  WasmModuleObjectBuilderStreaming(Isolate* isolate);
+  // The buffer passed into OnBytesReceived is owned by the caller.
+  void OnBytesReceived(const uint8_t*, size_t size);
+  void Finish();
+  void Abort(Local<Value> exception);
+  Local<Promise> GetPromise();
+
+  ~WasmModuleObjectBuilderStreaming();
+
+ private:
+  typedef std::pair<std::unique_ptr<const uint8_t[]>, size_t> Buffer;
+
+  WasmModuleObjectBuilderStreaming(const WasmModuleObjectBuilderStreaming&) =
+      delete;
+  WasmModuleObjectBuilderStreaming(WasmModuleObjectBuilderStreaming&&) =
+      default;
+  WasmModuleObjectBuilderStreaming& operator=(
+      const WasmModuleObjectBuilderStreaming&) = delete;
+  WasmModuleObjectBuilderStreaming& operator=(
+      WasmModuleObjectBuilderStreaming&&) = default;
+  Isolate* isolate_ = nullptr;
+
+#if V8_CC_MSVC
+  // We don't need the static Copy API, so the default
+  // NonCopyablePersistentTraits would be sufficient, however,
+  // MSVC eagerly instantiates the Copy.
+  // We ensure we don't use Copy, however, by compiling with the
+  // defaults everywhere else.
+  Persistent<Promise, CopyablePersistentTraits<Promise>> promise_;
+#else
+  Persistent<Promise> promise_;
+#endif
+  std::vector<Buffer> received_buffers_;
+  size_t total_size_ = 0;
+};
+
 class V8_EXPORT WasmModuleObjectBuilder final {
  public:
   WasmModuleObjectBuilder(Isolate* isolate) : isolate_(isolate) {}
@@ -4262,7 +4325,18 @@ class V8_EXPORT ArrayBuffer : public Object {
    */
   class V8_EXPORT Contents { // NOLINT
    public:
-    Contents() : data_(NULL), byte_length_(0) {}
+    Contents()
+        : data_(nullptr),
+          byte_length_(0),
+          allocation_base_(nullptr),
+          allocation_length_(0),
+          allocation_mode_(Allocator::AllocationMode::kNormal) {}
+
+    void* AllocationBase() const { return allocation_base_; }
+    size_t AllocationLength() const { return allocation_length_; }
+    Allocator::AllocationMode AllocationMode() const {
+      return allocation_mode_;
+    }
 
     void* Data() const { return data_; }
     size_t ByteLength() const { return byte_length_; }
@@ -4270,6 +4344,9 @@ class V8_EXPORT ArrayBuffer : public Object {
    private:
     void* data_;
     size_t byte_length_;
+    void* allocation_base_;
+    size_t allocation_length_;
+    Allocator::AllocationMode allocation_mode_;
 
     friend class ArrayBuffer;
   };
@@ -4415,6 +4492,12 @@ class V8_EXPORT ArrayBufferView : public Object {
  */
 class V8_EXPORT TypedArray : public ArrayBufferView {
  public:
+  /*
+   * The largest typed array size that can be constructed using New.
+   */
+  static constexpr size_t kMaxLength =
+      sizeof(void*) == 4 ? (1u << 30) - 1 : (1u << 31) - 1;
+
   /**
    * Number of elements in this typed array
    * (e.g. for Int16Array, |ByteLength|/2).
@@ -4618,7 +4701,18 @@ class V8_EXPORT SharedArrayBuffer : public Object {
    */
   class V8_EXPORT Contents {  // NOLINT
    public:
-    Contents() : data_(NULL), byte_length_(0) {}
+    Contents()
+        : data_(nullptr),
+          byte_length_(0),
+          allocation_base_(nullptr),
+          allocation_length_(0),
+          allocation_mode_(ArrayBuffer::Allocator::AllocationMode::kNormal) {}
+
+    void* AllocationBase() const { return allocation_base_; }
+    size_t AllocationLength() const { return allocation_length_; }
+    ArrayBuffer::Allocator::AllocationMode AllocationMode() const {
+      return allocation_mode_;
+    }
 
     void* Data() const { return data_; }
     size_t ByteLength() const { return byte_length_; }
@@ -4626,6 +4720,9 @@ class V8_EXPORT SharedArrayBuffer : public Object {
    private:
     void* data_;
     size_t byte_length_;
+    void* allocation_base_;
+    size_t allocation_length_;
+    ArrayBuffer::Allocator::AllocationMode allocation_mode_;
 
     friend class SharedArrayBuffer;
   };
@@ -4872,6 +4969,7 @@ class V8_EXPORT External : public Value {
   F(ArrayProto_forEach, array_for_each_iterator) \
   F(ArrayProto_keys, array_keys_iterator)        \
   F(ArrayProto_values, array_values_iterator)    \
+  F(ErrorPrototype, initial_error_prototype)     \
   F(IteratorPrototype, initial_iterator_prototype)
 
 enum Intrinsic {
@@ -5936,6 +6034,8 @@ V8_INLINE Local<Boolean> False(Isolate* isolate);
  *
  * The arguments for set_max_semi_space_size, set_max_old_space_size,
  * set_max_executable_size, set_code_range_size specify limits in MB.
+ *
+ * The argument for set_max_semi_space_size_in_kb is in KB.
  */
 class V8_EXPORT ResourceConstraints {
  public:
@@ -5953,10 +6053,28 @@ class V8_EXPORT ResourceConstraints {
   void ConfigureDefaults(uint64_t physical_memory,
                          uint64_t virtual_memory_limit);
 
-  int max_semi_space_size() const { return max_semi_space_size_; }
-  void set_max_semi_space_size(int limit_in_mb) {
-    max_semi_space_size_ = limit_in_mb;
+  // Returns the max semi-space size in MB.
+  V8_DEPRECATE_SOON("Use max_semi_space_size_in_kb()",
+                    int max_semi_space_size()) {
+    return static_cast<int>(max_semi_space_size_in_kb_ / 1024);
   }
+
+  // Sets the max semi-space size in MB.
+  V8_DEPRECATE_SOON("Use set_max_semi_space_size_in_kb(size_t limit_in_kb)",
+                    void set_max_semi_space_size(int limit_in_mb)) {
+    max_semi_space_size_in_kb_ = limit_in_mb * 1024;
+  }
+
+  // Returns the max semi-space size in KB.
+  size_t max_semi_space_size_in_kb() const {
+    return max_semi_space_size_in_kb_;
+  }
+
+  // Sets the max semi-space size in KB.
+  void set_max_semi_space_size_in_kb(size_t limit_in_kb) {
+    max_semi_space_size_in_kb_ = limit_in_kb;
+  }
+
   int max_old_space_size() const { return max_old_space_size_; }
   void set_max_old_space_size(int limit_in_mb) {
     max_old_space_size_ = limit_in_mb;
@@ -5982,7 +6100,10 @@ class V8_EXPORT ResourceConstraints {
   }
 
  private:
-  int max_semi_space_size_;
+  // max_semi_space_size_ is in KB
+  size_t max_semi_space_size_in_kb_;
+
+  // The remaining limits are in MB
   int max_old_space_size_;
   int max_executable_size_;
   uint32_t* stack_limit_;
@@ -6070,21 +6191,25 @@ typedef void (*DeprecatedCallCompletedCallback)();
 /**
  * HostImportDynamicallyCallback is called when we require the
  * embedder to load a module. This is used as part of the dynamic
- * import syntax. The behavior of this callback is not specified in
- * EcmaScript.
+ * import syntax.
  *
  * The referrer is the name of the file which calls the dynamic
  * import. The referrer can be used to resolve the module location.
  *
  * The specifier is the name of the module that should be imported.
  *
- * The DynamicImportResult object is used to signal success or failure
- * by calling it's respective methods.
+ * The embedder must compile, instantiate, evaluate the Module, and
+ * obtain it's namespace object.
  *
+ * The Promise returned from this function is forwarded to userland
+ * JavaScript. The embedder must resolve this promise with the module
+ * namespace object. In case of an exception, the embedder must reject
+ * this promise with the exception. If the promise creation itself
+ * fails (e.g. due to stack overflow), the embedder must propagate
+ * that exception by returning an empty MaybeLocal.
  */
-typedef void (*HostImportModuleDynamicallyCallback)(
-    Isolate* isolate, Local<String> referrer, Local<String> specifier,
-    Local<DynamicImportResult> result);
+typedef MaybeLocal<Promise> (*HostImportModuleDynamicallyCallback)(
+    Local<Context> context, Local<String> referrer, Local<String> specifier);
 
 /**
  * PromiseHook with type kInit is called when a new promise is
@@ -6207,9 +6332,12 @@ typedef void (*FailedAccessCheckCallback)(Local<Object> target,
  * Callback to check if code generation from strings is allowed. See
  * Context::AllowCodeGenerationFromStrings.
  */
-typedef bool (*AllowCodeGenerationFromStringsCallback)(Local<Context> context);
+typedef bool (*DeprecatedAllowCodeGenerationFromStringsCallback)(
+    Local<Context> context);
+typedef bool (*AllowCodeGenerationFromStringsCallback)(Local<Context> context,
+                                                       Local<String> source);
 
-// --- WASM compilation callbacks ---
+// --- WebAssembly compilation callbacks ---
 typedef bool (*ExtensionCallback)(const FunctionCallbackInfo<Value>&);
 
 // --- Callback for APIs defined on v8-supported objects, but implemented
@@ -6416,7 +6544,7 @@ struct JitCodeEvent {
   struct line_info_t {
     // PC offset
     size_t offset;
-    // Code postion
+    // Code position
     size_t pos;
     // The position type.
     PositionType position_type;
@@ -6840,6 +6968,8 @@ class V8_EXPORT Isolate {
     kAssigmentExpressionLHSIsCallInSloppy = 36,
     kAssigmentExpressionLHSIsCallInStrict = 37,
     kPromiseConstructorReturnedUndefined = 38,
+    kConstructorNonUndefinedPrimitiveReturn = 39,
+    kLabeledExpressionStatement = 40,
 
     // If you add new values here, you'll also need to update Chromium's:
     // UseCounter.h, V8PerIsolateData.cpp, histograms.xml
@@ -7098,6 +7228,12 @@ class V8_EXPORT Isolate {
    * returned.
    */
   Local<Context> GetEnteredOrMicrotaskContext();
+
+  /**
+   * Returns the Context that corresponds to the Incumbent realm in HTML spec.
+   * https://html.spec.whatwg.org/multipage/webappapis.html#incumbent
+   */
+  Local<Context> GetIncumbentContext();
 
   /**
    * Schedules an exception to be thrown when returning to JavaScript.  When an
@@ -7477,6 +7613,9 @@ class V8_EXPORT Isolate {
    */
   void SetAllowCodeGenerationFromStringsCallback(
       AllowCodeGenerationFromStringsCallback callback);
+  V8_DEPRECATED("Use callback with source parameter.",
+                void SetAllowCodeGenerationFromStringsCallback(
+                    DeprecatedAllowCodeGenerationFromStringsCallback callback));
 
   /**
    * Embedder over{ride|load} injection points for wasm APIs. The expectation
@@ -7614,7 +7753,7 @@ typedef bool (*EntropySource)(unsigned char* buffer, size_t length);
  * ReturnAddressLocationResolver is used as a callback function when v8 is
  * resolving the location of a return address on the stack. Profilers that
  * change the return address on the stack can use this to resolve the stack
- * location to whereever the profiler stashed the original return address.
+ * location to wherever the profiler stashed the original return address.
  *
  * \param return_addr_location A location on stack where a machine
  *    return address resides.
@@ -7642,8 +7781,9 @@ class V8_EXPORT V8 {
    * strings should be allowed.
    */
   V8_INLINE static V8_DEPRECATED(
-      "Use isolate version", void SetAllowCodeGenerationFromStringsCallback(
-                                 AllowCodeGenerationFromStringsCallback that));
+      "Use isolate version",
+      void SetAllowCodeGenerationFromStringsCallback(
+          DeprecatedAllowCodeGenerationFromStringsCallback that));
 
   /**
   * Check if V8 is dead and therefore unusable.  This is the case after
@@ -8054,8 +8194,12 @@ class V8_EXPORT SnapshotCreator {
    * Set the default context to be included in the snapshot blob.
    * The snapshot will not contain the global proxy, and we expect one or a
    * global object template to create one, to be provided upon deserialization.
+   *
+   * \param callback optional callback to serialize internal fields.
    */
-  void SetDefaultContext(Local<Context> context);
+  void SetDefaultContext(Local<Context> context,
+                         SerializeInternalFieldsCallback callback =
+                             SerializeInternalFieldsCallback());
 
   /**
    * Add additional context to be included in the snapshot blob.
@@ -8407,7 +8551,9 @@ class V8_EXPORT Context {
   static Local<Context> New(
       Isolate* isolate, ExtensionConfiguration* extensions = NULL,
       MaybeLocal<ObjectTemplate> global_template = MaybeLocal<ObjectTemplate>(),
-      MaybeLocal<Value> global_object = MaybeLocal<Value>());
+      MaybeLocal<Value> global_object = MaybeLocal<Value>(),
+      DeserializeInternalFieldsCallback internal_fields_deserializer =
+          DeserializeInternalFieldsCallback());
 
   /**
    * Create a new context from a (non-default) context snapshot. There
@@ -8573,6 +8719,27 @@ class V8_EXPORT Context {
 
    private:
     Local<Context> context_;
+  };
+
+  /**
+   * Stack-allocated class to support the backup incumbent settings object
+   * stack.
+   * https://html.spec.whatwg.org/multipage/webappapis.html#backup-incumbent-settings-object-stack
+   */
+  class BackupIncumbentScope {
+   public:
+    /**
+     * |backup_incumbent_context| is pushed onto the backup incumbent settings
+     * object stack.
+     */
+    explicit BackupIncumbentScope(Local<Context> backup_incumbent_context);
+    ~BackupIncumbentScope();
+
+   private:
+    friend class internal::Isolate;
+
+    Local<Context> backup_incumbent_context_;
+    const BackupIncumbentScope* prev_ = nullptr;
   };
 
  private:
@@ -8843,8 +9010,8 @@ class Internals {
   static const int kNodeIsIndependentShift = 3;
   static const int kNodeIsActiveShift = 4;
 
-  static const int kJSApiObjectType = 0xbc;
-  static const int kJSObjectType = 0xbd;
+  static const int kJSApiObjectType = 0xbd;
+  static const int kJSObjectType = 0xbe;
   static const int kFirstNonstringType = 0x80;
   static const int kOddballType = 0x82;
   static const int kForeignType = 0x86;
@@ -10097,11 +10264,11 @@ void* Context::GetAlignedPointerFromEmbedderData(int index) {
 #endif
 }
 
-
 void V8::SetAllowCodeGenerationFromStringsCallback(
-    AllowCodeGenerationFromStringsCallback callback) {
+    DeprecatedAllowCodeGenerationFromStringsCallback callback) {
   Isolate* isolate = Isolate::GetCurrent();
-  isolate->SetAllowCodeGenerationFromStringsCallback(callback);
+  isolate->SetAllowCodeGenerationFromStringsCallback(
+      reinterpret_cast<AllowCodeGenerationFromStringsCallback>(callback));
 }
 
 

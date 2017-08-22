@@ -32,13 +32,10 @@ class Zone;
 // routines.
 class ScopeInfo : public FixedArray {
  public:
-  DECLARE_CAST(ScopeInfo)
+  DECL_CAST(ScopeInfo)
 
   // Return the type of this scope.
   ScopeType scope_type();
-
-  // Does this scope call eval?
-  bool CallsEval();
 
   // Return the language mode of this scope.
   LanguageMode language_mode();
@@ -47,7 +44,7 @@ class ScopeInfo : public FixedArray {
   bool is_declaration_scope();
 
   // Does this scope make a sloppy eval call?
-  bool CallsSloppyEval() { return CallsEval() && is_sloppy(language_mode()); }
+  bool CallsSloppyEval();
 
   // Return the total number of locals allocated on the stack and in the
   // context. This includes the parameters that are allocated in the context.
@@ -80,9 +77,6 @@ class ScopeInfo : public FixedArray {
 
   // Is this scope the scope of a named function expression?
   bool HasFunctionName();
-
-  // Return if this has context allocated locals.
-  bool HasHeapAllocatedLocals();
 
   // Return if contexts are allocated for this scope.
   bool HasContext();
@@ -152,9 +146,6 @@ class ScopeInfo : public FixedArray {
                   InitializationFlag* init_flag,
                   MaybeAssignedFlag* maybe_assigned_flag);
 
-  // Lookup the name of a certain context slot by its index.
-  String* ContextSlotName(int slot_index);
-
   // Lookup support for serialized scope info. Returns the
   // parameter index for a given parameter name if the parameter is present;
   // otherwise returns a value < 0. The name must be an internalized string.
@@ -220,7 +211,7 @@ class ScopeInfo : public FixedArray {
   inline void Set##name(int value) { set(k##name, Smi::FromInt(value)); } \
   inline int name() {                                                     \
     if (length() > 0) {                                                   \
-      return Smi::cast(get(k##name))->value();                            \
+      return Smi::ToInt(get(k##name));                                    \
     } else {                                                              \
       return 0;                                                           \
     }                                                                     \
@@ -307,10 +298,11 @@ class ScopeInfo : public FixedArray {
 
   // Properties of scopes.
   class ScopeTypeField : public BitField<ScopeType, 0, 4> {};
-  class CallsEvalField : public BitField<bool, ScopeTypeField::kNext, 1> {};
+  class CallsSloppyEvalField : public BitField<bool, ScopeTypeField::kNext, 1> {
+  };
   STATIC_ASSERT(LANGUAGE_END == 2);
   class LanguageModeField
-      : public BitField<LanguageMode, CallsEvalField::kNext, 1> {};
+      : public BitField<LanguageMode, CallsSloppyEvalField::kNext, 1> {};
   class DeclarationScopeField
       : public BitField<bool, LanguageModeField::kNext, 1> {};
   class ReceiverVariableField

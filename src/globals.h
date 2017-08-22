@@ -125,6 +125,19 @@ const int kStackSpaceRequiredForCompilation = 40;
 #define V8_SFI_HAS_UNIQUE_ID 1
 #endif
 
+// Superclass for classes only using static method functions.
+// The subclass of AllStatic cannot be instantiated at all.
+class AllStatic {
+#ifdef DEBUG
+ public:
+  AllStatic() = delete;
+#endif
+};
+
+// DEPRECATED
+// TODO(leszeks): Delete this during a quiet period
+#define BASE_EMBEDDED
+
 typedef uint8_t byte;
 typedef byte* Address;
 
@@ -158,6 +171,7 @@ const int kSizetSize = sizeof(size_t);
 const int kFloatSize = sizeof(float);
 const int kDoubleSize = sizeof(double);
 const int kIntptrSize = sizeof(intptr_t);
+const int kUIntptrSize = sizeof(uintptr_t);
 const int kPointerSize = sizeof(void*);
 #if V8_TARGET_ARCH_X64 && V8_TARGET_ARCH_32_BIT
 const int kRegisterSize = kPointerSize + kPointerSize;
@@ -167,7 +181,7 @@ const int kRegisterSize = kPointerSize;
 const int kPCOnStackSize = kRegisterSize;
 const int kFPOnStackSize = kRegisterSize;
 
-#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X87
+#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_IA32
 const int kElidedFrameSlots = kPCOnStackSize / kPointerSize;
 #else
 const int kElidedFrameSlots = 0;
@@ -317,9 +331,10 @@ inline std::ostream& operator<<(std::ostream& os, const LanguageMode& mode) {
   switch (mode) {
     case SLOPPY: return os << "sloppy";
     case STRICT: return os << "strict";
-    default: UNREACHABLE();
+    case LANGUAGE_END:
+      UNREACHABLE();
   }
-  return os;
+  UNREACHABLE();
 }
 
 inline bool is_sloppy(LanguageMode language_mode) {
@@ -347,7 +362,7 @@ const int kNoSourcePosition = -1;
 const int kNoDeoptimizationId = -1;
 
 // Deoptimize bailout kind.
-enum class DeoptimizeKind : uint8_t { kEager, kSoft };
+enum class DeoptimizeKind : uint8_t { kEager, kSoft, kLazy };
 inline size_t hash_value(DeoptimizeKind kind) {
   return static_cast<size_t>(kind);
 }
@@ -357,6 +372,23 @@ inline std::ostream& operator<<(std::ostream& os, DeoptimizeKind kind) {
       return os << "Eager";
     case DeoptimizeKind::kSoft:
       return os << "Soft";
+    case DeoptimizeKind::kLazy:
+      return os << "Lazy";
+  }
+  UNREACHABLE();
+}
+
+// Indicates whether the lookup is related to sloppy-mode block-scoped
+// function hoisting, and is a synthetic assignment for that.
+enum class LookupHoistingMode { kNormal, kLegacySloppy };
+
+inline std::ostream& operator<<(std::ostream& os,
+                                const LookupHoistingMode& mode) {
+  switch (mode) {
+    case LookupHoistingMode::kNormal:
+      return os << "normal hoisting";
+    case LookupHoistingMode::kLegacySloppy:
+      return os << "legacy sloppy hoisting";
   }
   UNREACHABLE();
 }
@@ -490,7 +522,6 @@ class Struct;
 class FeedbackVector;
 class Variable;
 class RelocInfo;
-class Deserializer;
 class MessageLocation;
 
 typedef bool (*WeakSlotCallback)(Object** pointer);
@@ -519,6 +550,8 @@ const int kSpaceTagSize = 3;
 const int kSpaceTagMask = (1 << kSpaceTagSize) - 1;
 
 enum AllocationAlignment { kWordAligned, kDoubleAligned, kDoubleUnaligned };
+
+enum class AccessMode { ATOMIC, NON_ATOMIC };
 
 // Possible outcomes for decisions.
 enum class Decision : uint8_t { kUnknown, kTrue, kFalse };
@@ -741,7 +774,11 @@ struct AccessorDescriptor {
 // Testers for test.
 
 #define HAS_SMI_TAG(value) \
-  ((reinterpret_cast<intptr_t>(value) & kSmiTagMask) == kSmiTag)
+  ((reinterpret_cast<intptr_t>(value) & ::i::kSmiTagMask) == ::i::kSmiTag)
+
+#define HAS_HEAP_OBJECT_TAG(value)                                   \
+  (((reinterpret_cast<intptr_t>(value) & ::i::kHeapObjectTagMask) == \
+    ::i::kHeapObjectTag))
 
 // OBJECT_POINTER_ALIGN returns the value aligned as a HeapObject pointer
 #define OBJECT_POINTER_ALIGN(value)                             \
@@ -833,21 +870,6 @@ inline std::ostream& operator<<(std::ostream& os, ConvertReceiverMode mode) {
   UNREACHABLE();
 }
 
-// Defines whether tail call optimization is allowed.
-enum class TailCallMode : unsigned { kAllow, kDisallow };
-
-inline size_t hash_value(TailCallMode mode) { return bit_cast<unsigned>(mode); }
-
-inline std::ostream& operator<<(std::ostream& os, TailCallMode mode) {
-  switch (mode) {
-    case TailCallMode::kAllow:
-      return os << "ALLOW_TAIL_CALLS";
-    case TailCallMode::kDisallow:
-      return os << "DISALLOW_TAIL_CALLS";
-  }
-  UNREACHABLE();
-}
-
 // Valid hints for the abstract operation OrdinaryToPrimitive,
 // implemented according to ES6, section 7.1.1.
 enum class OrdinaryToPrimitiveHint { kNumber, kString };
@@ -905,16 +927,10 @@ enum AllocationSiteMode {
 };
 
 // The mips architecture prior to revision 5 has inverted encoding for sNaN.
-// The x87 FPU convert the sNaN to qNaN automatically when loading sNaN from
-// memmory.
-// Use mips sNaN which is a not used qNaN in x87 port as sNaN to workaround this
-// issue
-// for some test cases.
 #if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6) &&           \
      (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR))) || \
     (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6) &&         \
-     (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR))) || \
-    (V8_TARGET_ARCH_X87)
+     (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR)))
 const uint32_t kHoleNanUpper32 = 0xFFFF7FFF;
 const uint32_t kHoleNanLower32 = 0xFFFF7FFF;
 #else
@@ -933,11 +949,11 @@ const double kMaxSafeInteger = 9007199254740991.0;  // 2^53-1
 // The order of this enum has to be kept in sync with the predicates below.
 enum VariableMode : uint8_t {
   // User declared variables:
-  VAR,  // declared via 'var', and 'function' declarations
-
   LET,  // declared via 'let' declarations (first lexical)
 
   CONST,  // declared via 'const' declarations (last lexical)
+
+  VAR,  // declared via 'var', and 'function' declarations
 
   // Variables introduced by the compiler:
   TEMPORARY,  // temporary variables (not user-visible), stack-allocated
@@ -950,12 +966,10 @@ enum VariableMode : uint8_t {
                    // variable is global unless it has been shadowed
                    // by an eval-introduced variable
 
-  DYNAMIC_LOCAL,  // requires dynamic lookup, but we know that the
-                  // variable is local and where it is unless it
-                  // has been shadowed by an eval-introduced
-                  // variable
-
-  kLastVariableMode = DYNAMIC_LOCAL
+  DYNAMIC_LOCAL  // requires dynamic lookup, but we know that the
+                 // variable is local and where it is unless it
+                 // has been shadowed by an eval-introduced
+                 // variable
 };
 
 // Printing support
@@ -985,8 +999,7 @@ enum VariableKind : uint8_t {
   NORMAL_VARIABLE,
   FUNCTION_VARIABLE,
   THIS_VARIABLE,
-  SLOPPY_FUNCTION_NAME_VARIABLE,
-  kLastKind = SLOPPY_FUNCTION_NAME_VARIABLE
+  SLOPPY_FUNCTION_NAME_VARIABLE
 };
 
 inline bool IsDynamicVariableMode(VariableMode mode) {
@@ -995,13 +1008,14 @@ inline bool IsDynamicVariableMode(VariableMode mode) {
 
 
 inline bool IsDeclaredVariableMode(VariableMode mode) {
-  STATIC_ASSERT(VAR == 0);  // Implies that mode >= VAR.
-  return mode <= CONST;
+  STATIC_ASSERT(LET == 0);  // Implies that mode >= LET.
+  return mode <= VAR;
 }
 
 
 inline bool IsLexicalVariableMode(VariableMode mode) {
-  return mode >= LET && mode <= CONST;
+  STATIC_ASSERT(LET == 0);  // Implies that mode >= LET.
+  return mode <= CONST;
 }
 
 enum VariableLocation : uint8_t {
@@ -1339,62 +1353,6 @@ enum ExternalArrayType {
   kExternalUint8ClampedArray,
 };
 
-// Static information used by SuspendGenerator bytecode & GeneratorStore, in
-// order to determine where to store bytecode offset in generator.
-enum class SuspendFlags {
-  kYield = 0,
-  kYieldStar = 1,
-  kAwait = 2,
-  kSuspendTypeMask = 3,
-
-  kGenerator = 0 << 2,
-  kAsyncGenerator = 1 << 2,
-  kGeneratorTypeMask = 1 << 2,
-
-  kBitWidth = 3,
-
-  // Aliases
-  kGeneratorYield = kGenerator | kYield,
-  kGeneratorYieldStar = kGenerator | kYieldStar,
-  kGeneratorAwait = kGenerator | kAwait,
-  kAsyncGeneratorYield = kAsyncGenerator | kYield,
-  kAsyncGeneratorYieldStar = kAsyncGenerator | kYieldStar,
-  kAsyncGeneratorAwait = kAsyncGenerator | kAwait
-};
-
-inline constexpr SuspendFlags operator&(SuspendFlags lhs, SuspendFlags rhs) {
-  return static_cast<SuspendFlags>(static_cast<uint8_t>(lhs) &
-                                   static_cast<uint8_t>(rhs));
-}
-
-inline constexpr SuspendFlags operator|(SuspendFlags lhs, SuspendFlags rhs) {
-  return static_cast<SuspendFlags>(static_cast<uint8_t>(lhs) |
-                                   static_cast<uint8_t>(rhs));
-}
-
-inline SuspendFlags& operator|=(SuspendFlags& lhs, SuspendFlags rhs) {
-  lhs = lhs | rhs;
-  return lhs;
-}
-
-inline SuspendFlags operator~(SuspendFlags lhs) {
-  return static_cast<SuspendFlags>(~static_cast<uint8_t>(lhs));
-}
-
-inline const char* SuspendTypeFor(SuspendFlags flags) {
-  switch (flags & SuspendFlags::kSuspendTypeMask) {
-    case SuspendFlags::kYield:
-      return "yield";
-    case SuspendFlags::kYieldStar:
-      return "yield*";
-    case SuspendFlags::kAwait:
-      return "await";
-    default:
-      break;
-  }
-  UNREACHABLE();
-}
-
 struct AssemblerDebugInfo {
   AssemblerDebugInfo(const char* name, const char* file, int line)
       : name(name), file(file), line(line) {}
@@ -1408,6 +1366,52 @@ inline std::ostream& operator<<(std::ostream& os,
   os << "(" << info.name << ":" << info.file << ":" << info.line << ")";
   return os;
 }
+
+enum class OptimizationMarker {
+  kNone,
+  kCompileOptimized,
+  kCompileOptimizedConcurrent,
+  kInOptimizationQueue
+};
+
+inline std::ostream& operator<<(std::ostream& os,
+                                const OptimizationMarker& marker) {
+  switch (marker) {
+    case OptimizationMarker::kNone:
+      return os << "OptimizationMarker::kNone";
+    case OptimizationMarker::kCompileOptimized:
+      return os << "OptimizationMarker::kCompileOptimized";
+    case OptimizationMarker::kCompileOptimizedConcurrent:
+      return os << "OptimizationMarker::kCompileOptimizedConcurrent";
+    case OptimizationMarker::kInOptimizationQueue:
+      return os << "OptimizationMarker::kInOptimizationQueue";
+  }
+  UNREACHABLE();
+  return os;
+}
+
+enum class ConcurrencyMode { kNotConcurrent, kConcurrent };
+
+#define FOR_EACH_ISOLATE_ADDRESS_NAME(C)                \
+  C(Handler, handler)                                   \
+  C(CEntryFP, c_entry_fp)                               \
+  C(CFunction, c_function)                              \
+  C(Context, context)                                   \
+  C(PendingException, pending_exception)                \
+  C(PendingHandlerContext, pending_handler_context)     \
+  C(PendingHandlerCode, pending_handler_code)           \
+  C(PendingHandlerOffset, pending_handler_offset)       \
+  C(PendingHandlerFP, pending_handler_fp)               \
+  C(PendingHandlerSP, pending_handler_sp)               \
+  C(ExternalCaughtException, external_caught_exception) \
+  C(JSEntrySP, js_entry_sp)
+
+enum IsolateAddressId {
+#define DECLARE_ENUM(CamelName, hacker_name) k##CamelName##Address,
+  FOR_EACH_ISOLATE_ADDRESS_NAME(DECLARE_ENUM)
+#undef DECLARE_ENUM
+      kIsolateAddressCount
+};
 
 }  // namespace internal
 }  // namespace v8

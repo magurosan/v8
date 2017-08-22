@@ -14,8 +14,7 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-const RegisterConfiguration* (*GetRegConfig)() =
-    RegisterConfiguration::Turbofan;
+const RegisterConfiguration* (*GetRegConfig)() = RegisterConfiguration::Default;
 
 FlagsCondition CommuteFlagsCondition(FlagsCondition condition) {
   switch (condition) {
@@ -208,15 +207,6 @@ std::ostream& operator<<(std::ostream& os,
           break;
         case MachineRepresentation::kSimd128:
           os << "|s128";
-          break;
-        case MachineRepresentation::kSimd1x4:
-          os << "|s1x4";
-          break;
-        case MachineRepresentation::kSimd1x8:
-          os << "|s1x8";
-          break;
-        case MachineRepresentation::kSimd1x16:
-          os << "|s1x16";
           break;
         case MachineRepresentation::kTaggedSigned:
           os << "|ts";
@@ -570,6 +560,12 @@ Handle<HeapObject> Constant::ToHeapObject() const {
   return value;
 }
 
+Handle<Code> Constant::ToCode() const {
+  DCHECK_EQ(kHeapObject, type());
+  Handle<Code> value(bit_cast<Code**>(static_cast<intptr_t>(value_)));
+  return value;
+}
+
 std::ostream& operator<<(std::ostream& os, const Constant& constant) {
   switch (constant.type()) {
     case Constant::kInt32:
@@ -579,7 +575,7 @@ std::ostream& operator<<(std::ostream& os, const Constant& constant) {
     case Constant::kFloat32:
       return os << constant.ToFloat32() << "f";
     case Constant::kFloat64:
-      return os << constant.ToFloat64();
+      return os << constant.ToFloat64().value();
     case Constant::kExternalReference:
       return os << static_cast<const void*>(
                        constant.ToExternalReference().address());
@@ -889,19 +885,17 @@ static MachineRepresentation FilterRepresentation(MachineRepresentation rep) {
       return InstructionSequence::DefaultRepresentation();
     case MachineRepresentation::kWord32:
     case MachineRepresentation::kWord64:
-    case MachineRepresentation::kFloat32:
-    case MachineRepresentation::kFloat64:
-    case MachineRepresentation::kSimd128:
-    case MachineRepresentation::kSimd1x4:
-    case MachineRepresentation::kSimd1x8:
-    case MachineRepresentation::kSimd1x16:
     case MachineRepresentation::kTaggedSigned:
     case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
+    case MachineRepresentation::kFloat32:
+    case MachineRepresentation::kFloat64:
+    case MachineRepresentation::kSimd128:
       return rep;
     case MachineRepresentation::kNone:
       break;
   }
+
   UNREACHABLE();
 }
 
@@ -1025,18 +1019,9 @@ FrameStateDescriptor::FrameStateDescriptor(
       shared_info_(shared_info),
       outer_state_(outer_state) {}
 
-
-size_t FrameStateDescriptor::GetSize(OutputFrameStateCombine combine) const {
-  size_t size = 1 + parameters_count() + locals_count() + stack_count() +
-                (HasContext() ? 1 : 0);
-  switch (combine.kind()) {
-    case OutputFrameStateCombine::kPushOutput:
-      size += combine.GetPushCount();
-      break;
-    case OutputFrameStateCombine::kPokeAt:
-      break;
-  }
-  return size;
+size_t FrameStateDescriptor::GetSize() const {
+  return 1 + parameters_count() + locals_count() + stack_count() +
+         (HasContext() ? 1 : 0);
 }
 
 

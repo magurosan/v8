@@ -8,6 +8,7 @@
 #include "src/elements-kind.h"
 #include "src/field-index.h"
 #include "src/globals.h"
+#include "src/objects.h"
 #include "src/utils.h"
 
 namespace v8 {
@@ -89,6 +90,9 @@ class LoadHandler {
   static const int kValidityCellIndex = 1;
   static const int kHolderCellIndex = 2;
   static const int kFirstPrototypeIndex = 3;
+
+  // Decodes kind from Smi-handler.
+  static inline Kind GetHandlerKind(Smi* smi_handler);
 
   // Creates a Smi-handler for loading a property from a slow object.
   static inline Handle<Smi> LoadNormal(Isolate* isolate);
@@ -183,12 +187,20 @@ class StoreHandler {
   static const int kSmiHandlerOffset = Tuple3::kValue2Offset;
   static const int kValidityCellOffset = Tuple3::kValue3Offset;
 
+  static inline WeakCell* GetTuple3TransitionCell(Object* tuple3_handler);
+  static Object* ValidTuple3HandlerOrNull(Object* handler, Name* name,
+                                          Handle<Map>* out_transition);
+
   // The layout of an array handler representing a transitioning store
   // when prototype chain checks include non-existing lookups and access checks.
   static const int kSmiHandlerIndex = 0;
   static const int kValidityCellIndex = 1;
   static const int kTransitionCellIndex = 2;
   static const int kFirstPrototypeIndex = 3;
+
+  static inline WeakCell* GetArrayTransitionCell(Object* array_handler);
+  static Object* ValidFixedArrayHandlerOrNull(Object* raw_handler, Name* name,
+                                              Handle<Map>* out_transition);
 
   // Creates a Smi-handler for storing a field to fast object.
   static inline Handle<Smi> StoreField(Isolate* isolate, int descriptor,

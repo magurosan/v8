@@ -206,22 +206,6 @@ RUNTIME_FUNCTION(Runtime_StringAdd) {
                            isolate->factory()->NewConsString(str1, str2));
 }
 
-RUNTIME_FUNCTION(Runtime_StringConcat) {
-  HandleScope scope(isolate);
-  DCHECK_LE(2, args.length());
-  int const argc = args.length();
-  ScopedVector<Handle<Object>> argv(argc);
-
-  isolate->counters()->string_add_runtime()->Increment();
-  IncrementalStringBuilder builder(isolate);
-  for (int i = 0; i < argc; ++i) {
-    Handle<String> str = Handle<String>::cast(args.at(i));
-    if (str->length() != 0) {
-      builder.AppendString(str);
-    }
-  }
-  RETURN_RESULT_OR_FAILURE(isolate, builder.Finish());
-}
 
 RUNTIME_FUNCTION(Runtime_InternalizeString) {
   HandleScope handles(isolate);
@@ -290,7 +274,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   JSObject::EnsureCanContainHeapObjectElements(array);
 
   int special_length = special->length();
-  if (!array->HasFastObjectElements()) {
+  if (!array->HasObjectElements()) {
     return isolate->Throw(isolate->heap()->illegal_argument_string());
   }
 
@@ -349,7 +333,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderJoin) {
     THROW_NEW_ERROR_RETURN_FAILURE(isolate, NewInvalidStringLengthError());
   }
   CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
-  CHECK(array->HasFastObjectElements());
+  CHECK(array->HasObjectElements());
   CHECK(array_length >= 0);
 
   Handle<FixedArray> fixed_array(FixedArray::cast(array->elements()));
@@ -488,7 +472,7 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
   // elements_array is fast-mode JSarray of alternating positions
   // (increasing order) and strings.
-  CHECK(elements_array->HasFastSmiOrObjectElements());
+  CHECK(elements_array->HasSmiOrObjectElements());
   // array_length is length of original array (used to add separators);
   // separator is string to put between elements. Assumed to be non-empty.
   CHECK(array_length > 0);
@@ -743,14 +727,6 @@ RUNTIME_FUNCTION(Runtime_StringCharFromCode) {
   return isolate->heap()->empty_string();
 }
 
-RUNTIME_FUNCTION(Runtime_ExternalStringGetChar) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(2, args.length());
-  CONVERT_ARG_CHECKED(ExternalString, string, 0);
-  CONVERT_INT32_ARG_CHECKED(index, 1);
-  return Smi::FromInt(string->Get(index));
-}
-
 RUNTIME_FUNCTION(Runtime_StringCharCodeAt) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(2, args.length());
@@ -758,6 +734,11 @@ RUNTIME_FUNCTION(Runtime_StringCharCodeAt) {
   if (!args[1]->IsNumber()) return isolate->heap()->undefined_value();
   if (std::isinf(args.number_at(1))) return isolate->heap()->nan_value();
   return __RT_impl_Runtime_StringCharCodeAtRT(args, isolate);
+}
+
+RUNTIME_FUNCTION(Runtime_StringMaxLength) {
+  SealHandleScope shs(isolate);
+  return Smi::FromInt(String::kMaxLength);
 }
 
 }  // namespace internal

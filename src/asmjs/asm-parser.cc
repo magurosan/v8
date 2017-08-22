@@ -11,6 +11,7 @@
 
 #include "src/asmjs/asm-js.h"
 #include "src/asmjs/asm-types.h"
+#include "src/base/optional.h"
 #include "src/objects-inl.h"  // TODO(mstarzinger): Temporary cycle breaker.
 #include "src/parsing/scanner.h"
 #include "src/wasm/wasm-opcodes.h"
@@ -549,7 +550,7 @@ void AsmJsParser::ValidateModuleVarNewStdlib(VarInfo* info) {
 #define V(name, _junk1, _junk2, _junk3)                          \
   case TOK(name):                                                \
     DeclareStdlibFunc(info, VarKind::kSpecial, AsmType::name()); \
-    stdlib_uses_.insert(StandardMember::k##name);                \
+    stdlib_uses_.Add(StandardMember::k##name);                   \
     break;
     STDLIB_ARRAY_TYPE_LIST(V)
 #undef V
@@ -572,14 +573,14 @@ void AsmJsParser::ValidateModuleVarStdlib(VarInfo* info) {
   case TOK(name):                                           \
     DeclareGlobal(info, false, AsmType::Double(), kWasmF64, \
                   WasmInitExpr(const_value));               \
-    stdlib_uses_.insert(StandardMember::kMath##name);       \
+    stdlib_uses_.Add(StandardMember::kMath##name);          \
     break;
       STDLIB_MATH_VALUE_LIST(V)
 #undef V
 #define V(name, Name, op, sig)                                      \
   case TOK(name):                                                   \
     DeclareStdlibFunc(info, VarKind::kMath##Name, stdlib_##sig##_); \
-    stdlib_uses_.insert(StandardMember::kMath##Name);               \
+    stdlib_uses_.Add(StandardMember::kMath##Name);                  \
     break;
       STDLIB_MATH_FUNCTION_LIST(V)
 #undef V
@@ -589,11 +590,11 @@ void AsmJsParser::ValidateModuleVarStdlib(VarInfo* info) {
   } else if (Check(TOK(Infinity))) {
     DeclareGlobal(info, false, AsmType::Double(), kWasmF64,
                   WasmInitExpr(std::numeric_limits<double>::infinity()));
-    stdlib_uses_.insert(StandardMember::kInfinity);
+    stdlib_uses_.Add(StandardMember::kInfinity);
   } else if (Check(TOK(NaN))) {
     DeclareGlobal(info, false, AsmType::Double(), kWasmF64,
                   WasmInitExpr(std::numeric_limits<double>::quiet_NaN()));
-    stdlib_uses_.insert(StandardMember::kNaN);
+    stdlib_uses_.Add(StandardMember::kNaN);
   } else {
     FAIL("Invalid member of stdlib");
   }
@@ -2014,8 +2015,7 @@ AsmType* AsmJsParser::ValidateCall() {
   // both cases we might be seeing the {function_name} for the first time and
   // hence allocate a {VarInfo} here, all subsequent uses of the same name then
   // need to match the information stored at this point.
-  // TODO(mstarzinger): Consider using Chromiums base::Optional instead.
-  std::unique_ptr<TemporaryVariableScope> tmp;
+  base::Optional<TemporaryVariableScope> tmp;
   if (Check('[')) {
     RECURSEn(EqualityExpression());
     EXPECT_TOKENn('&');
@@ -2023,7 +2023,7 @@ AsmType* AsmJsParser::ValidateCall() {
     if (!CheckForUnsigned(&mask)) {
       FAILn("Expected mask literal");
     }
-    if (!base::bits::IsPowerOfTwo32(mask + 1)) {
+    if (!base::bits::IsPowerOfTwo(mask + 1)) {
       FAILn("Expected power of 2 mask");
     }
     current_function_builder_->EmitI32Const(mask);
@@ -2050,8 +2050,8 @@ AsmType* AsmJsParser::ValidateCall() {
     current_function_builder_->EmitI32Const(function_info->index);
     current_function_builder_->Emit(kExprI32Add);
     // We have to use a temporary for the correct order of evaluation.
-    tmp.reset(new TemporaryVariableScope(this));
-    current_function_builder_->EmitSetLocal(tmp.get()->get());
+    tmp.emplace(this);
+    current_function_builder_->EmitSetLocal(tmp->get());
     // The position of function table calls is after the table lookup.
     call_pos = static_cast<int>(scanner_.Position());
   } else {
@@ -2285,7 +2285,7 @@ AsmType* AsmJsParser::ValidateCall() {
       }
     }
     if (function_info->kind == VarKind::kTable) {
-      current_function_builder_->EmitGetLocal(tmp.get()->get());
+      current_function_builder_->EmitGetLocal(tmp->get());
       current_function_builder_->AddAsmWasmOffset(call_pos, to_number_pos);
       current_function_builder_->Emit(kExprCallIndirect);
       current_function_builder_->EmitU32V(signature_index);
@@ -2460,3 +2460,5 @@ void AsmJsParser::GatherCases(ZoneVector<int32_t>* cases) {
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8
+
+#undef RECURSE

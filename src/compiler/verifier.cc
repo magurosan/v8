@@ -507,6 +507,8 @@ void Verifier::Visitor::Check(Node* node) {
       // still be kStateValues.
       break;
     }
+    case IrOpcode::kObjectId:
+      CheckTypeIs(node, Type::Object());
     case IrOpcode::kStateValues:
     case IrOpcode::kTypedStateValues:
     case IrOpcode::kArgumentsElementsState:
@@ -543,16 +545,6 @@ void Verifier::Visitor::Check(Node* node) {
       // Type is 32 bit integral.
       CheckTypeIs(node, Type::Integral32());
       break;
-
-    case IrOpcode::kJSStringConcat:
-      // Type is string and all inputs are strings.
-      CheckTypeIs(node, Type::String());
-      for (int i = 0; i < StringConcatParameterOf(node->op()).operand_count();
-           i++) {
-        CheckValueInputIs(node, i, Type::String());
-      }
-      break;
-
     case IrOpcode::kJSAdd:
       // Type is Number or String.
       CheckTypeIs(node, Type::NumberOrString());
@@ -585,7 +577,6 @@ void Verifier::Visitor::Check(Node* node) {
       CheckTypeIs(node, Type::Number());
       break;
     case IrOpcode::kJSToString:
-    case IrOpcode::kJSToPrimitiveToString:
       // Type is String.
       CheckTypeIs(node, Type::String());
       break;
@@ -619,6 +610,10 @@ void Verifier::Visitor::Check(Node* node) {
       CheckTypeIs(node, Type::OtherObject());
       break;
     case IrOpcode::kJSCreateLiteralArray:
+      // Type is Array.
+      CheckTypeIs(node, Type::Array());
+      break;
+    case IrOpcode::kJSCreateEmptyLiteralArray:
       // Type is Array.
       CheckTypeIs(node, Type::Array());
       break;
@@ -668,6 +663,7 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     case IrOpcode::kJSDeleteProperty:
     case IrOpcode::kJSHasProperty:
+    case IrOpcode::kJSHasInPrototypeChain:
     case IrOpcode::kJSInstanceOf:
     case IrOpcode::kJSOrdinaryHasInstance:
       // Type is Boolean.
@@ -713,6 +709,7 @@ void Verifier::Visitor::Check(Node* node) {
 
     case IrOpcode::kJSConstructForwardVarargs:
     case IrOpcode::kJSConstruct:
+    case IrOpcode::kJSConstructWithArrayLike:
     case IrOpcode::kJSConstructWithSpread:
     case IrOpcode::kJSConvertReceiver:
       // Type is Receiver.
@@ -720,6 +717,7 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     case IrOpcode::kJSCallForwardVarargs:
     case IrOpcode::kJSCall:
+    case IrOpcode::kJSCallWithArrayLike:
     case IrOpcode::kJSCallWithSpread:
     case IrOpcode::kJSCallRuntime:
       // Type can be anything.
@@ -986,6 +984,11 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 2, Type::SignedSmall());
       CheckTypeIs(node, Type::SignedSmall());
       break;
+    case IrOpcode::kStringToLowerCaseIntl:
+    case IrOpcode::kStringToUpperCaseIntl:
+      CheckValueInputIs(node, 0, Type::String());
+      CheckTypeIs(node, Type::String());
+      break;
 
     case IrOpcode::kReferenceEqual:
       // (Unique, Any) -> Boolean  and
@@ -993,6 +996,7 @@ void Verifier::Visitor::Check(Node* node) {
       CheckTypeIs(node, Type::Boolean());
       break;
 
+    case IrOpcode::kObjectIsCallable:
     case IrOpcode::kObjectIsDetectableCallable:
     case IrOpcode::kObjectIsNaN:
     case IrOpcode::kObjectIsNonCallable:
@@ -1005,6 +1009,13 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kArrayBufferWasNeutered:
       CheckValueInputIs(node, 0, Type::Any());
       CheckTypeIs(node, Type::Boolean());
+      break;
+    case IrOpcode::kLookupHashStorageIndex:
+      CheckTypeIs(node, Type::SignedSmall());
+      break;
+    case IrOpcode::kLoadHashMapValue:
+      CheckValueInputIs(node, 2, Type::SignedSmall());
+      CheckTypeIs(node, Type::SignedSmall());
       break;
     case IrOpcode::kArgumentsLength:
       CheckValueInputIs(node, 0, Type::ExternalPointer());
@@ -1226,9 +1237,6 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 0, Type::NumberOrHole());
       CheckTypeIs(node, Type::NumberOrUndefined());
       break;
-    case IrOpcode::kCheckTaggedHole:
-      CheckValueInputIs(node, 0, Type::Any());
-      break;
     case IrOpcode::kCheckNotTaggedHole:
       CheckValueInputIs(node, 0, Type::Any());
       CheckTypeIs(node, Type::NonInternal());
@@ -1268,6 +1276,9 @@ void Verifier::Visitor::Check(Node* node) {
       // TODO(rossberg): activate once machine ops are typed.
       // CheckValueInputIs(node, 0, Type::Object());
       // CheckValueInputIs(node, 1, ElementAccessOf(node->op()).type));
+      CheckNotTyped(node);
+      break;
+    case IrOpcode::kTransitionAndStoreElement:
       CheckNotTyped(node);
       break;
     case IrOpcode::kStoreTypedElement:

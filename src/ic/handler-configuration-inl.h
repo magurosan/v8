@@ -13,6 +13,11 @@
 namespace v8 {
 namespace internal {
 
+// Decodes kind from Smi-handler.
+LoadHandler::Kind LoadHandler::GetHandlerKind(Smi* smi_handler) {
+  return KindBits::decode(smi_handler->value());
+}
+
 Handle<Smi> LoadHandler::LoadNormal(Isolate* isolate) {
   int config = KindBits::encode(kNormal);
   return handle(Smi::FromInt(config), isolate);
@@ -158,6 +163,22 @@ Handle<Smi> StoreHandler::TransitionToConstant(Isolate* isolate,
       StoreHandler::KindBits::encode(StoreHandler::kTransitionToConstant) |
       StoreHandler::DescriptorBits::encode(descriptor);
   return handle(Smi::FromInt(config), isolate);
+}
+
+// static
+WeakCell* StoreHandler::GetTuple3TransitionCell(Object* tuple3_handler) {
+  STATIC_ASSERT(kTransitionCellOffset == Tuple3::kValue1Offset);
+  WeakCell* cell = WeakCell::cast(Tuple3::cast(tuple3_handler)->value1());
+  DCHECK(!cell->cleared());
+  return cell;
+}
+
+// static
+WeakCell* StoreHandler::GetArrayTransitionCell(Object* array_handler) {
+  WeakCell* cell = WeakCell::cast(
+      FixedArray::cast(array_handler)->get(kTransitionCellIndex));
+  DCHECK(!cell->cleared());
+  return cell;
 }
 
 }  // namespace internal

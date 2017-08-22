@@ -30,18 +30,12 @@ Handle<Code> CodeFactory::RuntimeCEntry(Isolate* isolate, int result_size) {
 }
 
 // static
-Callable CodeFactory::LoadIC(Isolate* isolate) {
-  return Callable(isolate->builtins()->LoadICTrampoline(),
-                  LoadDescriptor(isolate));
-}
-
-// static
 Callable CodeFactory::LoadICProtoArray(Isolate* isolate,
                                        bool throw_if_nonexistent) {
   return Callable(
       throw_if_nonexistent
-          ? isolate->builtins()->LoadICProtoArrayThrowIfNonexistent()
-          : isolate->builtins()->LoadICProtoArray(),
+          ? BUILTIN_CODE(isolate, LoadICProtoArrayThrowIfNonexistent)
+          : BUILTIN_CODE(isolate, LoadICProtoArray),
       LoadICProtoArrayDescriptor(isolate));
 }
 
@@ -52,23 +46,11 @@ Callable CodeFactory::ApiGetter(Isolate* isolate) {
 }
 
 // static
-Callable CodeFactory::LoadICInOptimizedCode(Isolate* isolate) {
-  return Callable(isolate->builtins()->LoadIC(),
-                  LoadWithVectorDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::LoadICInOptimizedCode_Noninlined(Isolate* isolate) {
-  return Callable(isolate->builtins()->LoadIC_Noninlined(),
-                  LoadWithVectorDescriptor(isolate));
-}
-
-// static
 Callable CodeFactory::LoadGlobalIC(Isolate* isolate, TypeofMode typeof_mode) {
   return Callable(
       typeof_mode == NOT_INSIDE_TYPEOF
-          ? isolate->builtins()->LoadGlobalICTrampoline()
-          : isolate->builtins()->LoadGlobalICInsideTypeofTrampoline(),
+          ? BUILTIN_CODE(isolate, LoadGlobalICTrampoline)
+          : BUILTIN_CODE(isolate, LoadGlobalICInsideTypeofTrampoline),
       LoadGlobalDescriptor(isolate));
 }
 
@@ -76,51 +58,24 @@ Callable CodeFactory::LoadGlobalIC(Isolate* isolate, TypeofMode typeof_mode) {
 Callable CodeFactory::LoadGlobalICInOptimizedCode(Isolate* isolate,
                                                   TypeofMode typeof_mode) {
   return Callable(typeof_mode == NOT_INSIDE_TYPEOF
-                      ? isolate->builtins()->LoadGlobalIC()
-                      : isolate->builtins()->LoadGlobalICInsideTypeof(),
+                      ? BUILTIN_CODE(isolate, LoadGlobalIC)
+                      : BUILTIN_CODE(isolate, LoadGlobalICInsideTypeof),
                   LoadGlobalWithVectorDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::KeyedLoadIC(Isolate* isolate) {
-  return Callable(isolate->builtins()->KeyedLoadICTrampoline(),
-                  LoadDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::KeyedLoadICInOptimizedCode(Isolate* isolate) {
-  return Callable(isolate->builtins()->KeyedLoadIC(),
-                  LoadWithVectorDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::CallIC(Isolate* isolate, ConvertReceiverMode mode,
-                             TailCallMode tail_call_mode) {
-  CallICStub stub(isolate, mode, tail_call_mode);
-  return make_callable(stub);
-}
-
-// static
-Callable CodeFactory::CallICTrampoline(Isolate* isolate,
-                                       ConvertReceiverMode mode,
-                                       TailCallMode tail_call_mode) {
-  CallICTrampolineStub stub(isolate, mode, tail_call_mode);
-  return make_callable(stub);
 }
 
 // static
 Callable CodeFactory::StoreIC(Isolate* isolate, LanguageMode language_mode) {
   return Callable(language_mode == STRICT
-                      ? isolate->builtins()->StoreICStrictTrampoline()
-                      : isolate->builtins()->StoreICTrampoline(),
+                      ? BUILTIN_CODE(isolate, StoreICStrictTrampoline)
+                      : BUILTIN_CODE(isolate, StoreICTrampoline),
                   StoreDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::StoreICInOptimizedCode(Isolate* isolate,
                                              LanguageMode language_mode) {
-  return Callable(language_mode == STRICT ? isolate->builtins()->StoreICStrict()
-                                          : isolate->builtins()->StoreIC(),
+  return Callable(language_mode == STRICT ? BUILTIN_CODE(isolate, StoreICStrict)
+                                          : BUILTIN_CODE(isolate, StoreIC),
                   StoreWithVectorDescriptor(isolate));
 }
 
@@ -128,22 +83,22 @@ Callable CodeFactory::StoreICInOptimizedCode(Isolate* isolate,
 Callable CodeFactory::StoreIC_Uninitialized(Isolate* isolate,
                                             LanguageMode language_mode) {
   return Callable(language_mode == STRICT
-                      ? isolate->builtins()->StoreICStrict_Uninitialized()
-                      : isolate->builtins()->StoreIC_Uninitialized(),
+                      ? BUILTIN_CODE(isolate, StoreICStrict_Uninitialized)
+                      : BUILTIN_CODE(isolate, StoreIC_Uninitialized),
                   StoreWithVectorDescriptor(isolate));
 }
 
 Callable CodeFactory::StoreOwnIC(Isolate* isolate) {
   // TODO(ishell): Currently we use StoreOwnIC only for storing properties that
   // already exist in the boilerplate therefore we can use StoreIC.
-  return Callable(isolate->builtins()->StoreICStrictTrampoline(),
+  return Callable(BUILTIN_CODE(isolate, StoreICStrictTrampoline),
                   StoreDescriptor(isolate));
 }
 
 Callable CodeFactory::StoreOwnICInOptimizedCode(Isolate* isolate) {
   // TODO(ishell): Currently we use StoreOwnIC only for storing properties that
   // already exist in the boilerplate therefore we can use StoreIC.
-  return Callable(isolate->builtins()->StoreICStrict(),
+  return Callable(BUILTIN_CODE(isolate, StoreICStrict),
                   StoreWithVectorDescriptor(isolate));
 }
 
@@ -152,8 +107,8 @@ Callable CodeFactory::StoreGlobalIC(Isolate* isolate,
                                     LanguageMode language_mode) {
   // TODO(ishell): Use StoreGlobalIC[Strict]Trampoline when it's ready.
   return Callable(language_mode == STRICT
-                      ? isolate->builtins()->StoreICStrictTrampoline()
-                      : isolate->builtins()->StoreICTrampoline(),
+                      ? BUILTIN_CODE(isolate, StoreICStrictTrampoline)
+                      : BUILTIN_CODE(isolate, StoreICTrampoline),
                   StoreDescriptor(isolate));
 }
 
@@ -161,8 +116,8 @@ Callable CodeFactory::StoreGlobalIC(Isolate* isolate,
 Callable CodeFactory::StoreGlobalICInOptimizedCode(Isolate* isolate,
                                                    LanguageMode language_mode) {
   // TODO(ishell): Use StoreGlobalIC[Strict] when it's ready.
-  return Callable(language_mode == STRICT ? isolate->builtins()->StoreICStrict()
-                                          : isolate->builtins()->StoreIC(),
+  return Callable(language_mode == STRICT ? BUILTIN_CODE(isolate, StoreICStrict)
+                                          : BUILTIN_CODE(isolate, StoreIC),
                   StoreWithVectorDescriptor(isolate));
 }
 
@@ -170,8 +125,8 @@ Callable CodeFactory::StoreGlobalICInOptimizedCode(Isolate* isolate,
 Callable CodeFactory::KeyedStoreIC(Isolate* isolate,
                                    LanguageMode language_mode) {
   return Callable(language_mode == STRICT
-                      ? isolate->builtins()->KeyedStoreICStrictTrampoline()
-                      : isolate->builtins()->KeyedStoreICTrampoline(),
+                      ? BUILTIN_CODE(isolate, KeyedStoreICStrictTrampoline)
+                      : BUILTIN_CODE(isolate, KeyedStoreICTrampoline),
                   StoreDescriptor(isolate));
 }
 
@@ -179,8 +134,8 @@ Callable CodeFactory::KeyedStoreIC(Isolate* isolate,
 Callable CodeFactory::KeyedStoreICInOptimizedCode(Isolate* isolate,
                                                   LanguageMode language_mode) {
   return Callable(language_mode == STRICT
-                      ? isolate->builtins()->KeyedStoreICStrict()
-                      : isolate->builtins()->KeyedStoreIC(),
+                      ? BUILTIN_CODE(isolate, KeyedStoreICStrict)
+                      : BUILTIN_CODE(isolate, KeyedStoreIC),
                   StoreWithVectorDescriptor(isolate));
 }
 
@@ -188,8 +143,8 @@ Callable CodeFactory::KeyedStoreICInOptimizedCode(Isolate* isolate,
 Callable CodeFactory::KeyedStoreIC_Megamorphic(Isolate* isolate,
                                                LanguageMode language_mode) {
   return Callable(language_mode == STRICT
-                      ? isolate->builtins()->KeyedStoreIC_Megamorphic_Strict()
-                      : isolate->builtins()->KeyedStoreIC_Megamorphic(),
+                      ? BUILTIN_CODE(isolate, KeyedStoreIC_Megamorphic_Strict)
+                      : BUILTIN_CODE(isolate, KeyedStoreIC_Megamorphic),
                   StoreWithVectorDescriptor(isolate));
 }
 
@@ -200,9 +155,34 @@ Callable CodeFactory::CompareIC(Isolate* isolate, Token::Value op) {
 }
 
 // static
-Callable CodeFactory::BinaryOpIC(Isolate* isolate, Token::Value op) {
-  BinaryOpICStub stub(isolate, op);
-  return make_callable(stub);
+Callable CodeFactory::BinaryOperation(Isolate* isolate, Token::Value op) {
+  switch (op) {
+    case Token::SAR:
+      return Builtins::CallableFor(isolate, Builtins::kShiftRight);
+    case Token::SHL:
+      return Builtins::CallableFor(isolate, Builtins::kShiftLeft);
+    case Token::SHR:
+      return Builtins::CallableFor(isolate, Builtins::kShiftRightLogical);
+    case Token::ADD:
+      return Builtins::CallableFor(isolate, Builtins::kAdd);
+    case Token::SUB:
+      return Builtins::CallableFor(isolate, Builtins::kSubtract);
+    case Token::MUL:
+      return Builtins::CallableFor(isolate, Builtins::kMultiply);
+    case Token::DIV:
+      return Builtins::CallableFor(isolate, Builtins::kDivide);
+    case Token::MOD:
+      return Builtins::CallableFor(isolate, Builtins::kModulus);
+    case Token::BIT_OR:
+      return Builtins::CallableFor(isolate, Builtins::kBitwiseOr);
+    case Token::BIT_AND:
+      return Builtins::CallableFor(isolate, Builtins::kBitwiseAnd);
+    case Token::BIT_XOR:
+      return Builtins::CallableFor(isolate, Builtins::kBitwiseXor);
+    default:
+      break;
+  }
+  UNREACHABLE();
 }
 
 // static
@@ -230,62 +210,6 @@ Callable CodeFactory::NumberToString(Isolate* isolate) {
   NumberToStringStub stub(isolate);
   return make_callable(stub);
 }
-
-// static
-Callable CodeFactory::StringFromCharCode(Isolate* isolate) {
-  Handle<Code> code(isolate->builtins()->StringFromCharCode());
-  return Callable(code, BuiltinDescriptor(isolate));
-}
-
-#define TFS_BUILTIN(Name)                                                 \
-  Callable CodeFactory::Name(Isolate* isolate) {                          \
-    Handle<Code> code(isolate->builtins()->Name());                       \
-    return Callable(code, Builtin_##Name##_InterfaceDescriptor(isolate)); \
-  }
-
-TFS_BUILTIN(Add)
-TFS_BUILTIN(BitwiseAnd)
-TFS_BUILTIN(BitwiseOr)
-TFS_BUILTIN(BitwiseXor)
-TFS_BUILTIN(ClassOf)
-TFS_BUILTIN(CopyFastSmiOrObjectElements)
-TFS_BUILTIN(CreateIterResultObject)
-TFS_BUILTIN(Divide)
-TFS_BUILTIN(Equal)
-TFS_BUILTIN(FastCloneRegExp)
-TFS_BUILTIN(FastNewClosure)
-TFS_BUILTIN(FastNewObject)
-TFS_BUILTIN(FastNewRestParameter)
-TFS_BUILTIN(FastNewSloppyArguments)
-TFS_BUILTIN(FastNewStrictArguments)
-TFS_BUILTIN(ForInFilter)
-TFS_BUILTIN(GetSuperConstructor)
-TFS_BUILTIN(GreaterThan)
-TFS_BUILTIN(GreaterThanOrEqual)
-TFS_BUILTIN(GrowFastDoubleElements)
-TFS_BUILTIN(GrowFastSmiOrObjectElements)
-TFS_BUILTIN(HasProperty)
-TFS_BUILTIN(InstanceOf)
-TFS_BUILTIN(KeyedLoadIC_Megamorphic)
-TFS_BUILTIN(LessThan)
-TFS_BUILTIN(LessThanOrEqual)
-TFS_BUILTIN(LoadIC_Uninitialized)
-TFS_BUILTIN(Modulus)
-TFS_BUILTIN(Multiply)
-TFS_BUILTIN(NewUnmappedArgumentsElements)
-TFS_BUILTIN(NonNumberToNumber)
-TFS_BUILTIN(OrdinaryHasInstance)
-TFS_BUILTIN(ShiftLeft)
-TFS_BUILTIN(ShiftRight)
-TFS_BUILTIN(ShiftRightLogical)
-TFS_BUILTIN(StrictEqual)
-TFS_BUILTIN(StringToNumber)
-TFS_BUILTIN(Subtract)
-TFS_BUILTIN(ToInteger)
-TFS_BUILTIN(ToLength)
-TFS_BUILTIN(ToNumber)
-
-#undef TFS_BUILTIN
 
 // static
 Callable CodeFactory::StringAdd(Isolate* isolate, StringAddFlags flags,
@@ -316,12 +240,6 @@ Callable CodeFactory::StringCompare(Isolate* isolate, Token::Value token) {
 }
 
 // static
-Callable CodeFactory::StringIndexOf(Isolate* isolate) {
-  return Callable(isolate->builtins()->StringIndexOf(),
-                  StringIndexOfDescriptor(isolate));
-}
-
-// static
 Callable CodeFactory::SubString(Isolate* isolate) {
   SubStringStub stub(isolate);
   return Callable(stub.GetCode(), stub.GetCallInterfaceDescriptor());
@@ -329,19 +247,19 @@ Callable CodeFactory::SubString(Isolate* isolate) {
 
 // static
 Callable CodeFactory::ResumeGenerator(Isolate* isolate) {
-  return Callable(isolate->builtins()->ResumeGeneratorTrampoline(),
+  return Callable(BUILTIN_CODE(isolate, ResumeGeneratorTrampoline),
                   ResumeGeneratorDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::FrameDropperTrampoline(Isolate* isolate) {
-  return Callable(isolate->builtins()->FrameDropperTrampoline(),
+  return Callable(BUILTIN_CODE(isolate, FrameDropperTrampoline),
                   FrameDropperTrampolineDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::HandleDebuggerStatement(Isolate* isolate) {
-  return Callable(isolate->builtins()->HandleDebuggerStatement(),
+  return Callable(BUILTIN_CODE(isolate, HandleDebuggerStatement),
                   ContextOnlyDescriptor(isolate));
 }
 
@@ -353,28 +271,10 @@ Callable CodeFactory::FastCloneShallowArray(
 }
 
 // static
-Callable CodeFactory::FastCloneShallowObject(Isolate* isolate) {
-  return Callable(isolate->builtins()->FastCloneShallowObject(),
-                  FastCloneShallowObjectDescriptor(isolate));
-}
-
-// static
 Callable CodeFactory::FastNewFunctionContext(Isolate* isolate,
                                              ScopeType scope_type) {
   return Callable(isolate->builtins()->NewFunctionContext(scope_type),
                   FastNewFunctionContextDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::ForInPrepare(Isolate* isolate) {
-  return Callable(isolate->builtins()->ForInPrepare(),
-                  ForInPrepareDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::ForInNext(Isolate* isolate) {
-  return Callable(isolate->builtins()->ForInNext(),
-                  ForInNextDescriptor(isolate));
 }
 
 // static
@@ -385,79 +285,95 @@ Callable CodeFactory::AllocateHeapNumber(Isolate* isolate) {
 
 // static
 Callable CodeFactory::ArgumentAdaptor(Isolate* isolate) {
-  return Callable(isolate->builtins()->ArgumentsAdaptorTrampoline(),
+  return Callable(BUILTIN_CODE(isolate, ArgumentsAdaptorTrampoline),
                   ArgumentAdaptorDescriptor(isolate));
 }
 
 // static
-Callable CodeFactory::Call(Isolate* isolate, ConvertReceiverMode mode,
-                           TailCallMode tail_call_mode) {
-  return Callable(isolate->builtins()->Call(mode, tail_call_mode),
+Callable CodeFactory::Call(Isolate* isolate, ConvertReceiverMode mode) {
+  return Callable(isolate->builtins()->Call(mode),
                   CallTrampolineDescriptor(isolate));
+}
+
+// static
+Callable CodeFactory::CallWithArrayLike(Isolate* isolate) {
+  return Callable(BUILTIN_CODE(isolate, CallWithArrayLike),
+                  CallWithArrayLikeDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::CallWithSpread(Isolate* isolate) {
-  return Callable(isolate->builtins()->CallWithSpread(),
+  return Callable(BUILTIN_CODE(isolate, CallWithSpread),
+                  CallWithSpreadDescriptor(isolate));
+}
+
+// static
+Callable CodeFactory::CallFunction(Isolate* isolate, ConvertReceiverMode mode) {
+  return Callable(isolate->builtins()->CallFunction(mode),
                   CallTrampolineDescriptor(isolate));
 }
 
 // static
-Callable CodeFactory::CallFunction(Isolate* isolate, ConvertReceiverMode mode,
-                                   TailCallMode tail_call_mode) {
-  return Callable(isolate->builtins()->CallFunction(mode, tail_call_mode),
-                  CallTrampolineDescriptor(isolate));
+Callable CodeFactory::CallVarargs(Isolate* isolate) {
+  return Callable(BUILTIN_CODE(isolate, CallVarargs),
+                  CallVarargsDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::CallForwardVarargs(Isolate* isolate) {
-  return Callable(isolate->builtins()->CallForwardVarargs(),
+  return Callable(BUILTIN_CODE(isolate, CallForwardVarargs),
                   CallForwardVarargsDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::CallFunctionForwardVarargs(Isolate* isolate) {
-  return Callable(isolate->builtins()->CallFunctionForwardVarargs(),
+  return Callable(BUILTIN_CODE(isolate, CallFunctionForwardVarargs),
                   CallForwardVarargsDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::Construct(Isolate* isolate) {
-  return Callable(isolate->builtins()->Construct(),
+  return Callable(BUILTIN_CODE(isolate, Construct),
                   ConstructTrampolineDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::ConstructWithSpread(Isolate* isolate) {
-  return Callable(isolate->builtins()->ConstructWithSpread(),
-                  ConstructTrampolineDescriptor(isolate));
+  return Callable(BUILTIN_CODE(isolate, ConstructWithSpread),
+                  ConstructWithSpreadDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::ConstructFunction(Isolate* isolate) {
-  return Callable(isolate->builtins()->ConstructFunction(),
+  return Callable(BUILTIN_CODE(isolate, ConstructFunction),
                   ConstructTrampolineDescriptor(isolate));
 }
 
 // static
+Callable CodeFactory::ConstructVarargs(Isolate* isolate) {
+  return Callable(BUILTIN_CODE(isolate, ConstructVarargs),
+                  ConstructVarargsDescriptor(isolate));
+}
+
+// static
 Callable CodeFactory::ConstructForwardVarargs(Isolate* isolate) {
-  return Callable(isolate->builtins()->ConstructForwardVarargs(),
+  return Callable(BUILTIN_CODE(isolate, ConstructForwardVarargs),
                   ConstructForwardVarargsDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::ConstructFunctionForwardVarargs(Isolate* isolate) {
-  return Callable(isolate->builtins()->ConstructFunctionForwardVarargs(),
+  return Callable(BUILTIN_CODE(isolate, ConstructFunctionForwardVarargs),
                   ConstructForwardVarargsDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::InterpreterPushArgsThenCall(
     Isolate* isolate, ConvertReceiverMode receiver_mode,
-    TailCallMode tail_call_mode, InterpreterPushArgsMode mode) {
-  return Callable(isolate->builtins()->InterpreterPushArgsThenCall(
-                      receiver_mode, tail_call_mode, mode),
-                  InterpreterPushArgsThenCallDescriptor(isolate));
+    InterpreterPushArgsMode mode) {
+  return Callable(
+      isolate->builtins()->InterpreterPushArgsThenCall(receiver_mode, mode),
+      InterpreterPushArgsThenCallDescriptor(isolate));
 }
 
 // static
@@ -465,12 +381,6 @@ Callable CodeFactory::InterpreterPushArgsThenConstruct(
     Isolate* isolate, InterpreterPushArgsMode mode) {
   return Callable(isolate->builtins()->InterpreterPushArgsThenConstruct(mode),
                   InterpreterPushArgsThenConstructDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::InterpreterPushArgsThenConstructArray(Isolate* isolate) {
-  return Callable(isolate->builtins()->InterpreterPushArgsThenConstructArray(),
-                  InterpreterPushArgsThenConstructArrayDescriptor(isolate));
 }
 
 // static
@@ -483,7 +393,7 @@ Callable CodeFactory::InterpreterCEntry(Isolate* isolate, int result_size) {
 
 // static
 Callable CodeFactory::InterpreterOnStackReplacement(Isolate* isolate) {
-  return Callable(isolate->builtins()->InterpreterOnStackReplacement(),
+  return Callable(BUILTIN_CODE(isolate, InterpreterOnStackReplacement),
                   ContextOnlyDescriptor(isolate));
 }
 
@@ -495,24 +405,32 @@ Callable CodeFactory::ArrayConstructor(Isolate* isolate) {
 
 // static
 Callable CodeFactory::ArrayPop(Isolate* isolate) {
-  return Callable(isolate->builtins()->ArrayPop(), BuiltinDescriptor(isolate));
+  return Callable(BUILTIN_CODE(isolate, ArrayPop), BuiltinDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::ArrayShift(Isolate* isolate) {
-  return Callable(isolate->builtins()->ArrayShift(),
+  return Callable(BUILTIN_CODE(isolate, ArrayShift),
                   BuiltinDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::ArrayPush(Isolate* isolate) {
-  return Callable(isolate->builtins()->ArrayPush(), BuiltinDescriptor(isolate));
+  return Callable(BUILTIN_CODE(isolate, ArrayPush), BuiltinDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::FunctionPrototypeBind(Isolate* isolate) {
-  return Callable(isolate->builtins()->FunctionPrototypeBind(),
+  return Callable(BUILTIN_CODE(isolate, FunctionPrototypeBind),
                   BuiltinDescriptor(isolate));
+}
+
+// static
+Callable CodeFactory::TransitionElementsKind(Isolate* isolate,
+                                             ElementsKind from, ElementsKind to,
+                                             bool is_jsarray) {
+  TransitionElementsKindStub stub(isolate, from, to, is_jsarray);
+  return make_callable(stub);
 }
 
 }  // namespace internal

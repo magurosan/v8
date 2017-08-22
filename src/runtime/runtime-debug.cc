@@ -147,17 +147,18 @@ static MaybeHandle<JSArray> GetIteratorInternalProperties(
     Isolate* isolate, Handle<IteratorType> object) {
   Factory* factory = isolate->factory();
   Handle<IteratorType> iterator = Handle<IteratorType>::cast(object);
-  CHECK(iterator->kind()->IsSmi());
   const char* kind = NULL;
-  switch (Smi::cast(iterator->kind())->value()) {
-    case IteratorType::kKindKeys:
+  switch (iterator->map()->instance_type()) {
+    case JS_MAP_KEY_ITERATOR_TYPE:
       kind = "keys";
       break;
-    case IteratorType::kKindValues:
-      kind = "values";
-      break;
-    case IteratorType::kKindEntries:
+    case JS_MAP_KEY_VALUE_ITERATOR_TYPE:
+    case JS_SET_KEY_VALUE_ITERATOR_TYPE:
       kind = "entries";
+      break;
+    case JS_MAP_VALUE_ITERATOR_TYPE:
+    case JS_SET_VALUE_ITERATOR_TYPE:
+      kind = "values";
       break;
     default:
       UNREACHABLE();
@@ -324,7 +325,7 @@ RUNTIME_FUNCTION(Runtime_DebugGetPropertyDetails) {
   // Make sure to set the current context to the context before the debugger was
   // entered (if the debugger is entered). The reason for switching context here
   // is that for some property lookups (accessors and interceptors) callbacks
-  // into the embedding application can occour, and the embedding application
+  // into the embedding application can occur, and the embedding application
   // could have the assumption that its own native context is the current
   // context and not some internal debugger context.
   SaveContext save(isolate);
@@ -1057,28 +1058,15 @@ RUNTIME_FUNCTION(Runtime_SetBreakPointsActive) {
 }
 
 
-static bool IsPositionAlignmentCodeCorrect(int alignment) {
-  return alignment == STATEMENT_ALIGNED || alignment == BREAK_POSITION_ALIGNED;
-}
-
-
 RUNTIME_FUNCTION(Runtime_GetBreakLocations) {
   HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
+  DCHECK_EQ(1, args.length());
   CHECK(isolate->debug()->is_active());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, fun, 0);
-  CONVERT_NUMBER_CHECKED(int32_t, statement_aligned_code, Int32, args[1]);
-
-  if (!IsPositionAlignmentCodeCorrect(statement_aligned_code)) {
-    return isolate->ThrowIllegalOperation();
-  }
-  BreakPositionAlignment alignment =
-      static_cast<BreakPositionAlignment>(statement_aligned_code);
 
   Handle<SharedFunctionInfo> shared(fun->shared());
   // Find the number of break points
-  Handle<Object> break_locations =
-      Debug::GetSourceBreakLocations(shared, alignment);
+  Handle<Object> break_locations = Debug::GetSourceBreakLocations(shared);
   if (break_locations->IsUndefined(isolate)) {
     return isolate->heap()->undefined_value();
   }
@@ -1109,29 +1097,20 @@ RUNTIME_FUNCTION(Runtime_SetFunctionBreakPoint) {
   return Smi::FromInt(source_position);
 }
 
-
 // Changes the state of a break point in a script and returns source position
 // where break point was set. NOTE: Regarding performance see the NOTE for
 // GetScriptFromScriptData.
 // args[0]: script to set break point in
 // args[1]: number: break source position (within the script source)
-// args[2]: number, breakpoint position alignment
-// args[3]: number: break point object
+// args[2]: number: break point object
 RUNTIME_FUNCTION(Runtime_SetScriptBreakPoint) {
   HandleScope scope(isolate);
-  DCHECK_EQ(4, args.length());
+  DCHECK_EQ(3, args.length());
   CHECK(isolate->debug()->is_active());
   CONVERT_ARG_HANDLE_CHECKED(JSValue, wrapper, 0);
   CONVERT_NUMBER_CHECKED(int32_t, source_position, Int32, args[1]);
   CHECK(source_position >= 0);
-  CONVERT_NUMBER_CHECKED(int32_t, statement_aligned_code, Int32, args[2]);
-  CONVERT_ARG_HANDLE_CHECKED(Object, break_point_object_arg, 3);
-
-  if (!IsPositionAlignmentCodeCorrect(statement_aligned_code)) {
-    return isolate->ThrowIllegalOperation();
-  }
-  BreakPositionAlignment alignment =
-      static_cast<BreakPositionAlignment>(statement_aligned_code);
+  CONVERT_ARG_HANDLE_CHECKED(Object, break_point_object_arg, 2);
 
   // Get the script from the script wrapper.
   CHECK(wrapper->value()->IsScript());
@@ -1139,7 +1118,7 @@ RUNTIME_FUNCTION(Runtime_SetScriptBreakPoint) {
 
   // Set break point.
   if (!isolate->debug()->SetBreakPointForScript(script, break_point_object_arg,
-                                                &source_position, alignment)) {
+                                                &source_position)) {
     return isolate->heap()->undefined_value();
   }
 
@@ -1578,7 +1557,7 @@ int ScriptLinePosition(Handle<Script> script, int line) {
   if (line == 0) return 0;
   // If line == line_count, we return the first position beyond the last line.
   if (line > line_count) return -1;
-  return Smi::cast(line_ends_array->get(line - 1))->value() + 1;
+  return Smi::ToInt(line_ends_array->get(line - 1)) + 1;
 }
 
 }  // namespace
@@ -1813,8 +1792,8 @@ RUNTIME_FUNCTION(Runtime_ScriptSourceLine) {
   }
 
   const int start =
-      (line == 0) ? 0 : Smi::cast(line_ends_array->get(line - 1))->value() + 1;
-  const int end = Smi::cast(line_ends_array->get(line))->value();
+      (line == 0) ? 0 : Smi::ToInt(line_ends_array->get(line - 1)) + 1;
+  const int end = Smi::ToInt(line_ends_array->get(line));
 
   Handle<String> source =
       handle(String::cast(script_handle->source()), isolate);
@@ -1982,12 +1961,12 @@ RUNTIME_FUNCTION(Runtime_DebugCollectCoverage) {
     }
 
     Handle<JSArray> script_obj =
-        factory->NewJSArrayWithElements(ranges_array, FAST_ELEMENTS);
+        factory->NewJSArrayWithElements(ranges_array, PACKED_ELEMENTS);
     Handle<JSObject> wrapper = Script::GetWrapper(script_data.script);
     JSObject::AddProperty(script_obj, script_string, wrapper, NONE);
     scripts_array->set(i, *script_obj);
   }
-  return *factory->NewJSArrayWithElements(scripts_array, FAST_ELEMENTS);
+  return *factory->NewJSArrayWithElements(scripts_array, PACKED_ELEMENTS);
 }
 
 RUNTIME_FUNCTION(Runtime_DebugTogglePreciseCoverage) {
@@ -2014,9 +1993,16 @@ RUNTIME_FUNCTION(Runtime_IncBlockCounter) {
 
   DCHECK(FLAG_block_coverage);
 
-  DebugInfo* debug_info = function->shared()->GetDebugInfo();
-  CoverageInfo* coverage_info = CoverageInfo::cast(debug_info->coverage_info());
-  coverage_info->IncrementBlockCount(coverage_array_slot_index);
+  // It's quite possible that a function contains IncBlockCounter bytecodes, but
+  // no coverage info exists. This happens e.g. by selecting the best-effort
+  // coverage collection mode, which triggers deletion of all coverage infos in
+  // order to avoid memory leaks.
+
+  SharedFunctionInfo* shared = function->shared();
+  if (shared->HasCoverageInfo()) {
+    CoverageInfo* coverage_info = shared->GetCoverageInfo();
+    coverage_info->IncrementBlockCount(coverage_array_slot_index);
+  }
 
   return isolate->heap()->undefined_value();
 }

@@ -16,7 +16,7 @@ namespace internal {
 
 bool CpuFeatures::SupportsCrankshaft() { return true; }
 
-bool CpuFeatures::SupportsWasmSimd128() { return false; }
+bool CpuFeatures::SupportsWasmSimd128() { return true; }
 
 void RelocInfo::apply(intptr_t delta) {
   // On arm64 only internal references need extra work.
@@ -394,9 +394,21 @@ Operand::Operand(Register reg, Extend extend, unsigned shift_amount)
   DCHECK(reg.Is64Bits() || ((extend != SXTX) && (extend != UXTX)));
 }
 
+bool Operand::IsHeapObjectRequest() const {
+  DCHECK_IMPLIES(heap_object_request_.has_value(), reg_.Is(NoReg));
+  DCHECK_IMPLIES(heap_object_request_.has_value(),
+                 immediate_.rmode() == RelocInfo::EMBEDDED_OBJECT ||
+                     immediate_.rmode() == RelocInfo::CODE_TARGET);
+  return heap_object_request_.has_value();
+}
+
+HeapObjectRequest Operand::heap_object_request() const {
+  DCHECK(IsHeapObjectRequest());
+  return *heap_object_request_;
+}
 
 bool Operand::IsImmediate() const {
-  return reg_.Is(NoReg) && !is_heap_number();
+  return reg_.Is(NoReg) && !IsHeapObjectRequest();
 }
 
 
@@ -425,6 +437,13 @@ Operand Operand::ToExtendedRegister() const {
   return Operand(reg_, reg_.Is64Bits() ? UXTX : UXTW, shift_amount_);
 }
 
+Immediate Operand::immediate_for_heap_object_request() const {
+  DCHECK((heap_object_request().kind() == HeapObjectRequest::kHeapNumber &&
+          immediate_.rmode() == RelocInfo::EMBEDDED_OBJECT) ||
+         (heap_object_request().kind() == HeapObjectRequest::kCodeStub &&
+          immediate_.rmode() == RelocInfo::CODE_TARGET));
+  return immediate_;
+}
 
 Immediate Operand::immediate() const {
   DCHECK(IsImmediate());
@@ -793,26 +812,6 @@ void RelocInfo::set_target_runtime_entry(Isolate* isolate, Address target,
 }
 
 
-Handle<Cell> RelocInfo::target_cell_handle() {
-  UNIMPLEMENTED();
-  Cell *null_cell = NULL;
-  return Handle<Cell>(null_cell);
-}
-
-
-Cell* RelocInfo::target_cell() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  return Cell::FromValueAddress(Memory::Address_at(pc_));
-}
-
-
-void RelocInfo::set_target_cell(Cell* cell,
-                                WriteBarrierMode write_barrier_mode,
-                                ICacheFlushMode icache_flush_mode) {
-  UNIMPLEMENTED();
-}
-
-
 static const int kCodeAgeStubEntryOffset = 3 * kInstructionSize;
 
 Handle<Code> RelocInfo::code_age_stub_handle(Assembler* origin) {
@@ -877,8 +876,6 @@ void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
     visitor->VisitEmbeddedPointer(host(), this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(host(), this);
-  } else if (mode == RelocInfo::CELL) {
-    visitor->VisitCellPointer(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -899,8 +896,6 @@ void RelocInfo::Visit(Heap* heap) {
     StaticVisitor::VisitEmbeddedPointer(heap, this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
-  } else if (mode == RelocInfo::CELL) {
-    StaticVisitor::VisitCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     StaticVisitor::VisitExternalReference(this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -1272,18 +1267,6 @@ inline void Assembler::CheckBuffer() {
     CheckConstPool(false, true);
   }
 }
-
-
-TypeFeedbackId Assembler::RecordedAstId() {
-  DCHECK(!recorded_ast_id_.IsNone());
-  return recorded_ast_id_;
-}
-
-
-void Assembler::ClearRecordedAstId() {
-  recorded_ast_id_ = TypeFeedbackId::None();
-}
-
 
 }  // namespace internal
 }  // namespace v8

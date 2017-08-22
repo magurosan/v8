@@ -10,7 +10,7 @@
 #include "src/inspector/v8-debugger.h"
 #include "src/inspector/v8-inspector-impl.h"
 #include "src/inspector/v8-internal-value-type.h"
-#include "src/inspector/v8-value-copier.h"
+#include "src/inspector/v8-value-utils.h"
 
 #include "include/v8-inspector.h"
 
@@ -217,6 +217,14 @@ void V8InjectedScriptHost::subtypeCallback(
   }
   if (value->IsPromise()) {
     info.GetReturnValue().Set(toV8StringInternalized(isolate, "promise"));
+    return;
+  }
+  if (value->IsArrayBuffer() || value->IsSharedArrayBuffer()) {
+    info.GetReturnValue().Set(toV8StringInternalized(isolate, "arraybuffer"));
+    return;
+  }
+  if (value->IsDataView()) {
+    info.GetReturnValue().Set(toV8StringInternalized(isolate, "dataview"));
     return;
   }
   std::unique_ptr<StringBuffer> subtype =

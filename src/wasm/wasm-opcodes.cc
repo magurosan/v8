@@ -43,6 +43,7 @@ namespace wasm {
   CASE_I32x4_OP(name, str) CASE_I16x8_OP(name, str) CASE_I8x16_OP(name, str)
 #define CASE_SIGN_OP(TYPE, name, str) \
   CASE_##TYPE##_OP(name##S, str "_s") CASE_##TYPE##_OP(name##U, str "_u")
+#define CASE_UNSIGNED_OP(TYPE, name, str) CASE_##TYPE##_OP(name##U, str "_u")
 #define CASE_ALL_SIGN_OP(name, str) \
   CASE_FLOAT_OP(name, str) CASE_SIGN_OP(INT, name, str)
 #define CASE_CONVERT_OP(name, RES, SRC, src_suffix, str) \
@@ -52,6 +53,10 @@ namespace wasm {
   CASE_SIGN_OP(I32, name##8, str "8")   \
   CASE_SIGN_OP(I32, name##16, str "16") \
   CASE_I32_OP(name, str "32")
+#define CASE_U32_OP(name, str)            \
+  CASE_I32_OP(name, str "32")             \
+  CASE_UNSIGNED_OP(I32, name##8, str "8") \
+  CASE_UNSIGNED_OP(I32, name##16, str "16")
 
 const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
   switch (opcode) {
@@ -141,7 +146,9 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     // Non-standard opcodes.
     CASE_OP(Try, "try")
     CASE_OP(Throw, "throw")
+    CASE_OP(Rethrow, "rethrow")
     CASE_OP(Catch, "catch")
+    CASE_OP(CatchAll, "catch_all")
 
     // asm.js-only opcodes.
     CASE_F64_OP(Acos, "acos")
@@ -218,39 +225,23 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_S128_OP(Or, "or")
     CASE_S128_OP(Xor, "xor")
     CASE_S128_OP(Not, "not")
-    CASE_S32x4_OP(Shuffle, "shuffle")
-    CASE_S32x4_OP(Select, "select")
-    CASE_S16x8_OP(Shuffle, "shuffle")
-    CASE_S16x8_OP(Select, "select")
+    CASE_S128_OP(Select, "select")
     CASE_S8x16_OP(Shuffle, "shuffle")
-    CASE_S8x16_OP(Select, "select")
-    CASE_S1x4_OP(And, "and")
-    CASE_S1x4_OP(Or, "or")
-    CASE_S1x4_OP(Xor, "xor")
-    CASE_S1x4_OP(Not, "not")
     CASE_S1x4_OP(AnyTrue, "any_true")
     CASE_S1x4_OP(AllTrue, "all_true")
-    CASE_S1x8_OP(And, "and")
-    CASE_S1x8_OP(Or, "or")
-    CASE_S1x8_OP(Xor, "xor")
-    CASE_S1x8_OP(Not, "not")
     CASE_S1x8_OP(AnyTrue, "any_true")
     CASE_S1x8_OP(AllTrue, "all_true")
-    CASE_S1x16_OP(And, "and")
-    CASE_S1x16_OP(Or, "or")
-    CASE_S1x16_OP(Xor, "xor")
-    CASE_S1x16_OP(Not, "not")
     CASE_S1x16_OP(AnyTrue, "any_true")
     CASE_S1x16_OP(AllTrue, "all_true")
 
     // Atomic operations.
-    CASE_L32_OP(AtomicAdd, "atomic_add")
-    CASE_L32_OP(AtomicAnd, "atomic_and")
-    CASE_L32_OP(AtomicCompareExchange, "atomic_cmpxchng")
-    CASE_L32_OP(AtomicExchange, "atomic_xchng")
-    CASE_L32_OP(AtomicOr, "atomic_or")
-    CASE_L32_OP(AtomicSub, "atomic_sub")
-    CASE_L32_OP(AtomicXor, "atomic_xor")
+    CASE_U32_OP(AtomicAdd, "atomic_add")
+    CASE_U32_OP(AtomicSub, "atomic_sub")
+    CASE_U32_OP(AtomicAnd, "atomic_and")
+    CASE_U32_OP(AtomicOr, "atomic_or")
+    CASE_U32_OP(AtomicXor, "atomic_xor")
+    CASE_U32_OP(AtomicExchange, "atomic_xchng")
+    CASE_U32_OP(AtomicCompareExchange, "atomic_cmpxchng")
 
     default : return "unknown";
     // clang-format on
@@ -259,11 +250,10 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
 
 bool WasmOpcodes::IsPrefixOpcode(WasmOpcode opcode) {
   switch (opcode) {
-#define CHECK_PREFIX(name, opcode) \
-  case k##name##Prefix:            \
-    return true;
+#define CHECK_PREFIX(name, opcode) case k##name##Prefix:
     FOREACH_PREFIX(CHECK_PREFIX)
 #undef CHECK_PREFIX
+    return true;
     default:
       return false;
   }
@@ -271,11 +261,10 @@ bool WasmOpcodes::IsPrefixOpcode(WasmOpcode opcode) {
 
 bool WasmOpcodes::IsControlOpcode(WasmOpcode opcode) {
   switch (opcode) {
-#define CHECK_OPCODE(name, opcode, _) \
-  case kExpr##name:                   \
-    return true;
+#define CHECK_OPCODE(name, opcode, _) case kExpr##name:
     FOREACH_CONTROL_OPCODE(CHECK_OPCODE)
 #undef CHECK_OPCODE
+    return true;
     default:
       return false;
   }
@@ -409,13 +398,6 @@ FunctionSig* WasmOpcodes::AtomicSignature(WasmOpcode opcode) {
   return const_cast<FunctionSig*>(
       kSimpleExprSigs[kAtomicExprSigTable[opcode & 0xff]]);
 }
-
-// TODO(titzer): pull WASM_64 up to a common header.
-#if !V8_TARGET_ARCH_32_BIT || V8_TARGET_ARCH_X64
-#define WASM_64 1
-#else
-#define WASM_64 0
-#endif
 
 int WasmOpcodes::TrapReasonToMessageId(TrapReason reason) {
   switch (reason) {

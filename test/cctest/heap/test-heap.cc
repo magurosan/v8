@@ -53,10 +53,14 @@
 #include "test/cctest/heap/heap-tester.h"
 #include "test/cctest/heap/heap-utils.h"
 #include "test/cctest/test-feedback-vector.h"
-
+#include "test/cctest/test-transitions.h"
 
 namespace v8 {
 namespace internal {
+
+// We only start allocation-site tracking with the second instantiation.
+static const int kPretenureCreationCount =
+    AllocationSite::kPretenureMinimumCreated + 1;
 
 static void CheckMap(Map* map, int type, int instance_size) {
   CHECK(map->IsHeapObject());
@@ -75,6 +79,7 @@ TEST(HeapMaps) {
   CheckMap(heap->meta_map(), MAP_TYPE, Map::kSize);
   CheckMap(heap->heap_number_map(), HEAP_NUMBER_TYPE, HeapNumber::kSize);
   CheckMap(heap->fixed_array_map(), FIXED_ARRAY_TYPE, kVariableSizeSentinel);
+  CheckMap(heap->hash_table_map(), HASH_TABLE_TYPE, kVariableSizeSentinel);
   CheckMap(heap->string_map(), STRING_TYPE, kVariableSizeSentinel);
 }
 
@@ -180,7 +185,7 @@ HEAP_TEST(TestNewSpaceRefsInCopiedCode) {
   Heap* heap = isolate->heap();
   HandleScope sc(isolate);
 
-  Handle<Object> value = factory->NewNumber(1.000123);
+  Handle<HeapNumber> value = factory->NewHeapNumber(1.000123);
   CHECK(heap->InNewSpace(*value));
 
   i::byte buffer[i::Assembler::kMinimalBufferSize];
@@ -737,6 +742,7 @@ TEST(DeleteWeakGlobalHandle) {
 }
 
 TEST(BytecodeArray) {
+  if (FLAG_never_compact) return;
   static const uint8_t kRawBytes[] = {0xc3, 0x7e, 0xa5, 0x5a};
   static const int kRawBytesSize = sizeof(kRawBytes);
   static const int kFrameSize = 32;
@@ -1029,7 +1035,7 @@ TEST(JSArray) {
   JSArray::SetLength(array, 0);
   CHECK_EQ(Smi::kZero, array->length());
   // Must be in fast mode.
-  CHECK(array->HasFastSmiOrObjectElements());
+  CHECK(array->HasSmiOrObjectElements());
 
   // array[length] = name.
   JSReceiver::SetElement(isolate, array, 0, name, SLOPPY).Check();
@@ -1190,8 +1196,7 @@ TEST(Iteration) {
 
   // Allocate a JS array to OLD_SPACE and NEW_SPACE
   objs[next_objs_index++] = factory->NewJSArray(10);
-  objs[next_objs_index++] =
-      factory->NewJSArray(10, FAST_HOLEY_ELEMENTS, TENURED);
+  objs[next_objs_index++] = factory->NewJSArray(10, HOLEY_ELEMENTS, TENURED);
 
   // Allocate a small string to OLD_DATA_SPACE and NEW_SPACE
   objs[next_objs_index++] = factory->NewStringFromStaticChars("abcdefghij");
@@ -1590,11 +1595,11 @@ TEST(TestSizeOfRegExpCode) {
   int initial_size = static_cast<int>(CcTest::heap()->SizeOfObjects());
 
   CompileRun("'foo'.match(reg_exp_source);");
-  CcTest::CollectAllGarbage();
+  CcTest::CollectAllAvailableGarbage();
   int size_with_regexp = static_cast<int>(CcTest::heap()->SizeOfObjects());
 
   CompileRun("'foo'.match(half_size_reg_exp);");
-  CcTest::CollectAllGarbage();
+  CcTest::CollectAllAvailableGarbage();
   int size_with_optimized_regexp =
       static_cast<int>(CcTest::heap()->SizeOfObjects());
 
@@ -2195,9 +2200,9 @@ TEST(InstanceOfStubWriteBarrier) {
 
   CHECK(f->IsOptimized());
 
-  while (
-      !ObjectMarking::IsBlack(f->code(), MarkingState::Internal(f->code())) &&
-      !marking->IsStopped()) {
+  while (!ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+             f->code(), MarkingState::Internal(f->code())) &&
+         !marking->IsStopped()) {
     // Discard any pending GC requests otherwise we will get GC when we enter
     // code below.
     marking->Step(MB, IncrementalMarking::NO_GC_VIA_STACK_GUARD,
@@ -2217,105 +2222,6 @@ TEST(InstanceOfStubWriteBarrier) {
   CcTest::heap()->incremental_marking()->set_should_hurry(true);
   CcTest::CollectGarbage(OLD_SPACE);
 }
-
-namespace {
-
-int GetProfilerTicks(SharedFunctionInfo* shared) {
-  return FLAG_ignition || FLAG_turbo ? shared->profiler_ticks()
-                                     : shared->code()->profiler_ticks();
-}
-
-}  // namespace
-
-TEST(ResetSharedFunctionInfoCountersDuringIncrementalMarking) {
-  if (!FLAG_incremental_marking) return;
-  FLAG_stress_compaction = false;
-  FLAG_stress_incremental_marking = false;
-  FLAG_allow_natives_syntax = true;
-#ifdef VERIFY_HEAP
-  FLAG_verify_heap = true;
-#endif
-
-  CcTest::InitializeVM();
-  if (!CcTest::i_isolate()->use_optimizer()) return;
-  v8::HandleScope outer_scope(CcTest::isolate());
-  v8::Local<v8::Context> ctx = CcTest::isolate()->GetCurrentContext();
-
-  {
-    v8::HandleScope scope(CcTest::isolate());
-    CompileRun(
-        "function f () {"
-        "  var s = 0;"
-        "  for (var i = 0; i < 100; i++)  s += i;"
-        "  return s;"
-        "}"
-        "f(); f();"
-        "%OptimizeFunctionOnNextCall(f);"
-        "f();");
-  }
-  i::Handle<JSFunction> f = i::Handle<JSFunction>::cast(
-      v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
-          CcTest::global()->Get(ctx, v8_str("f")).ToLocalChecked())));
-  CHECK(f->IsOptimized());
-
-  // Make sure incremental marking it not running.
-  CcTest::heap()->incremental_marking()->Stop();
-
-  CcTest::heap()->StartIncrementalMarking(i::Heap::kNoGCFlags,
-                                          i::GarbageCollectionReason::kTesting);
-  // The following calls will increment CcTest::heap()->global_ic_age().
-  CcTest::isolate()->ContextDisposedNotification();
-  heap::SimulateIncrementalMarking(CcTest::heap());
-  CcTest::CollectAllGarbage();
-
-  CHECK_EQ(CcTest::heap()->global_ic_age(), f->shared()->ic_age());
-  CHECK_EQ(0, f->shared()->opt_count());
-  CHECK_EQ(0, GetProfilerTicks(f->shared()));
-}
-
-
-TEST(ResetSharedFunctionInfoCountersDuringMarkSweep) {
-  FLAG_stress_compaction = false;
-  FLAG_stress_incremental_marking = false;
-  FLAG_allow_natives_syntax = true;
-#ifdef VERIFY_HEAP
-  FLAG_verify_heap = true;
-#endif
-
-  CcTest::InitializeVM();
-  if (!CcTest::i_isolate()->use_optimizer()) return;
-  v8::HandleScope outer_scope(CcTest::isolate());
-  v8::Local<v8::Context> ctx = CcTest::isolate()->GetCurrentContext();
-
-  {
-    v8::HandleScope scope(CcTest::isolate());
-    CompileRun(
-        "function f () {"
-        "  var s = 0;"
-        "  for (var i = 0; i < 100; i++)  s += i;"
-        "  return s;"
-        "}"
-        "f(); f();"
-        "%OptimizeFunctionOnNextCall(f);"
-        "f();");
-  }
-  i::Handle<JSFunction> f = i::Handle<JSFunction>::cast(
-      v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
-          CcTest::global()->Get(ctx, v8_str("f")).ToLocalChecked())));
-  CHECK(f->IsOptimized());
-
-  // Make sure incremental marking it not running.
-  CcTest::heap()->incremental_marking()->Stop();
-
-  // The following two calls will increment CcTest::heap()->global_ic_age().
-  CcTest::isolate()->ContextDisposedNotification();
-  CcTest::CollectAllGarbage();
-
-  CHECK_EQ(CcTest::heap()->global_ic_age(), f->shared()->ic_age());
-  CHECK_EQ(0, f->shared()->opt_count());
-  CHECK_EQ(0, GetProfilerTicks(f->shared()));
-}
-
 
 HEAP_TEST(GCFlags) {
   if (!FLAG_incremental_marking) return;
@@ -2374,7 +2280,7 @@ TEST(IdleNotificationFinishMarking) {
                   IncrementalMarking::DO_NOT_FORCE_COMPLETION, StepOrigin::kV8);
     CHECK(!marking->IsIdleMarkingDelayCounterLimitReached());
   } while (
-      !CcTest::heap()->mark_compact_collector()->marking_deque()->IsEmpty());
+      !CcTest::heap()->mark_compact_collector()->marking_worklist()->IsEmpty());
 
   // The next invocations of incremental marking are not going to complete
   // marking
@@ -2451,21 +2357,20 @@ TEST(OptimizedPretenuringAllocationFolding) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array();"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = [[{}], [1.1]];"
-      "  }"
-      "  return elements[number_elements-1]"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array();"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = [[{}], [1.1]];"
+              "  }"
+              "  return elements[number_elements-1]"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2494,8 +2399,9 @@ TEST(OptimizedPretenuringObjectArrayLiterals) {
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_optimizer() || FLAG_always_opt) return;
   if (FLAG_gc_global || FLAG_stress_compaction ||
-      FLAG_stress_incremental_marking)
+      FLAG_stress_incremental_marking) {
     return;
+  }
   v8::HandleScope scope(CcTest::isolate());
 
   // Grow new space unitl maximum capacity reached.
@@ -2504,21 +2410,20 @@ TEST(OptimizedPretenuringObjectArrayLiterals) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = [{}, {}, {}];"
-      "  }"
-      "  return elements[number_elements - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = [{}, {}, {}];"
+              "  }"
+              "  return elements[number_elements - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2547,21 +2452,20 @@ TEST(OptimizedPretenuringMixedInObjectProperties) {
 
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = {a: {c: 2.2, d: {}}, b: 1.1};"
-      "  }"
-      "  return elements[number_elements - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = {a: {c: 2.2, d: {}}, b: 1.1};"
+              "  }"
+              "  return elements[number_elements - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2606,21 +2510,20 @@ TEST(OptimizedPretenuringDoubleArrayProperties) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = {a: 1.1, b: 2.2};"
-      "  }"
-      "  return elements[i - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = {a: 1.1, b: 2.2};"
+              "  }"
+              "  return elements[i - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2628,7 +2531,7 @@ TEST(OptimizedPretenuringDoubleArrayProperties) {
       v8::Utils::OpenHandle(*v8::Local<v8::Object>::Cast(res)));
 
   CHECK(CcTest::heap()->InOldSpace(*o));
-  CHECK(CcTest::heap()->InOldSpace(o->properties()));
+  CHECK(CcTest::heap()->InOldSpace(o->property_array()));
 }
 
 
@@ -2648,21 +2551,20 @@ TEST(OptimizedPretenuringdoubleArrayLiterals) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = [1.1, 2.2, 3.3];"
-      "  }"
-      "  return elements[number_elements - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = [1.1, 2.2, 3.3];"
+              "  }"
+              "  return elements[number_elements - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2690,20 +2592,20 @@ TEST(OptimizedPretenuringNestedMixedArrayLiterals) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = 100;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = [[{}, {}, {}], [1.1, 2.2, 3.3]];"
-      "  }"
-      "  return elements[number_elements - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();");
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = [[{}, {}, {}], [1.1, 2.2, 3.3]];"
+              "  }"
+              "  return elements[number_elements - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2742,21 +2644,20 @@ TEST(OptimizedPretenuringNestedObjectLiterals) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = [[{}, {}, {}],[{}, {}, {}]];"
-      "  }"
-      "  return elements[number_elements - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = [[{}, {}, {}],[{}, {}, {}]];"
+              "  }"
+              "  return elements[number_elements - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2795,21 +2696,20 @@ TEST(OptimizedPretenuringNestedDoubleLiterals) {
   }
 
   i::ScopedVector<char> source(1024);
-  i::SNPrintF(
-      source,
-      "var number_elements = %d;"
-      "var elements = new Array(number_elements);"
-      "function f() {"
-      "  for (var i = 0; i < number_elements; i++) {"
-      "    elements[i] = [[1.1, 1.2, 1.3],[2.1, 2.2, 2.3]];"
-      "  }"
-      "  return elements[number_elements - 1];"
-      "};"
-      "f(); gc();"
-      "f(); f();"
-      "%%OptimizeFunctionOnNextCall(f);"
-      "f();",
-      AllocationSite::kPretenureMinimumCreated);
+  i::SNPrintF(source,
+              "var number_elements = %d;"
+              "var elements = new Array(number_elements);"
+              "function f() {"
+              "  for (var i = 0; i < number_elements; i++) {"
+              "    elements[i] = [[1.1, 1.2, 1.3],[2.1, 2.2, 2.3]];"
+              "  }"
+              "  return elements[number_elements - 1];"
+              "};"
+              "f(); gc();"
+              "f(); f();"
+              "%%OptimizeFunctionOnNextCall(f);"
+              "f();",
+              kPretenureCreationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2865,7 +2765,8 @@ TEST(OptimizedAllocationArrayLiterals) {
 
 
 static int CountMapTransitions(Map* map) {
-  return TransitionArray::NumberOfTransitions(map->raw_transitions());
+  DisallowHeapAllocation no_gc;
+  return TransitionsAccessor(map, &no_gc).NumberOfTransitions();
 }
 
 
@@ -3054,98 +2955,19 @@ TEST(TransitionArraySimpleToFull) {
   CompileRun("o = new F;"
              "root = new F");
   root = GetByName("root");
-  CHECK(TransitionArray::IsSimpleTransition(root->map()->raw_transitions()));
+  {
+    DisallowHeapAllocation no_gc;
+    CHECK(TestTransitionsAccessor(root->map(), &no_gc).IsWeakCellEncoding());
+  }
   AddPropertyTo(2, root, "happy");
 
   // Count number of live transitions after marking.  Note that one transition
-  // is left, because 'o' still holds an instance of one transition target.
+  // is left, because 'root' still holds an instance of one transition target.
   int transitions_after = CountMapTransitions(
       Map::cast(root->map()->GetBackPointer()));
   CHECK_EQ(1, transitions_after);
 }
 #endif  // DEBUG
-
-
-TEST(Regress2143a) {
-  FLAG_incremental_marking = true;
-  CcTest::InitializeVM();
-  v8::HandleScope scope(CcTest::isolate());
-
-  // Prepare a map transition from the root object together with a yet
-  // untransitioned root object.
-  CompileRun("var root = new Object;"
-             "root.foo = 0;"
-             "root = new Object;");
-
-  heap::SimulateIncrementalMarking(CcTest::heap());
-
-  // Compile a StoreIC that performs the prepared map transition. This
-  // will restart incremental marking and should make sure the root is
-  // marked grey again.
-  CompileRun("function f(o) {"
-             "  o.foo = 0;"
-             "}"
-             "f(new Object);"
-             "f(root);");
-
-  // This bug only triggers with aggressive IC clearing.
-  CcTest::heap()->AgeInlineCaches();
-
-  // Explicitly request GC to perform final marking step and sweeping.
-  CcTest::CollectAllGarbage();
-
-  Handle<JSReceiver> root = v8::Utils::OpenHandle(*v8::Local<v8::Object>::Cast(
-      CcTest::global()
-          ->Get(CcTest::isolate()->GetCurrentContext(), v8_str("root"))
-          .ToLocalChecked()));
-
-  // The root object should be in a sane state.
-  CHECK(root->IsJSObject());
-  CHECK(root->map()->IsMap());
-}
-
-
-TEST(Regress2143b) {
-  FLAG_incremental_marking = true;
-  FLAG_allow_natives_syntax = true;
-  CcTest::InitializeVM();
-  v8::HandleScope scope(CcTest::isolate());
-
-  // Prepare a map transition from the root object together with a yet
-  // untransitioned root object.
-  CompileRun("var root = new Object;"
-             "root.foo = 0;"
-             "root = new Object;");
-
-  heap::SimulateIncrementalMarking(CcTest::heap());
-
-  // Compile an optimized LStoreNamedField that performs the prepared
-  // map transition. This will restart incremental marking and should
-  // make sure the root is marked grey again.
-  CompileRun("function f(o) {"
-             "  o.foo = 0;"
-             "}"
-             "f(new Object);"
-             "f(new Object);"
-             "%OptimizeFunctionOnNextCall(f);"
-             "f(root);"
-             "%DeoptimizeFunction(f);");
-
-  // This bug only triggers with aggressive IC clearing.
-  CcTest::heap()->AgeInlineCaches();
-
-  // Explicitly request GC to perform final marking step and sweeping.
-  CcTest::CollectAllGarbage();
-
-  Handle<JSReceiver> root = v8::Utils::OpenHandle(*v8::Local<v8::Object>::Cast(
-      CcTest::global()
-          ->Get(CcTest::isolate()->GetCurrentContext(), v8_str("root"))
-          .ToLocalChecked()));
-
-  // The root object should be in a sane state.
-  CHECK(root->IsJSObject());
-  CHECK(root->map()->IsMap());
-}
 
 
 TEST(ReleaseOverReservedPages) {
@@ -3300,8 +3122,7 @@ TEST(IncrementalMarkingPreservesMonomorphicCallIC) {
 
 
 static Code* FindFirstIC(Code* code, Code::Kind kind) {
-  int mask = RelocInfo::ModeMask(RelocInfo::CODE_TARGET) |
-             RelocInfo::ModeMask(RelocInfo::CODE_TARGET_WITH_ID);
+  int mask = RelocInfo::ModeMask(RelocInfo::CODE_TARGET);
   for (RelocIterator it(code, mask); !it.done(); it.next()) {
     RelocInfo* info = it.rinfo();
     Code* target = Code::GetCodeFromTargetAddress(info->target_address());
@@ -3725,10 +3546,10 @@ TEST(Regress169928) {
       JSArray::kSize + AllocationMemento::kSize + kPointerSize);
 
   Handle<JSArray> array =
-      factory->NewJSArrayWithElements(array_data, FAST_SMI_ELEMENTS);
+      factory->NewJSArrayWithElements(array_data, PACKED_SMI_ELEMENTS);
 
   CHECK_EQ(Smi::FromInt(2), array->length());
-  CHECK(array->HasFastSmiOrObjectElements());
+  CHECK(array->HasSmiOrObjectElements());
 
   // We need filler the size of AllocationMemento object, plus an extra
   // fill pointer value.
@@ -3755,57 +3576,6 @@ TEST(Regress169928) {
       .ToLocalChecked();
 }
 
-
-#ifdef DEBUG
-TEST(Regress513507) {
-  FLAG_allow_natives_syntax = true;
-  FLAG_gc_global = true;
-  CcTest::InitializeVM();
-  Isolate* isolate = CcTest::i_isolate();
-  LocalContext env;
-  Heap* heap = isolate->heap();
-  HandleScope scope(isolate);
-
-  // Prepare function whose optimized code map we can use.
-  Handle<SharedFunctionInfo> shared;
-  {
-    HandleScope inner_scope(isolate);
-    CompileRun("function f() { return 1 }"
-               "f(); %OptimizeFunctionOnNextCall(f); f();");
-
-    Handle<JSFunction> f = Handle<JSFunction>::cast(
-        v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
-            CcTest::global()->Get(env.local(), v8_str("f")).ToLocalChecked())));
-    shared = inner_scope.CloseAndEscape(handle(f->shared(), isolate));
-    CompileRun("f = null");
-  }
-
-  // Prepare optimized code that we can use.
-  Handle<Code> code;
-  {
-    HandleScope inner_scope(isolate);
-    CompileRun("function g() { return 2 }"
-               "g(); %OptimizeFunctionOnNextCall(g); g();");
-
-    Handle<JSFunction> g = Handle<JSFunction>::cast(
-        v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
-            CcTest::global()->Get(env.local(), v8_str("g")).ToLocalChecked())));
-    code = inner_scope.CloseAndEscape(handle(g->code(), isolate));
-    if (!code->is_optimized_code()) return;
-  }
-
-  Handle<Context> context(isolate->context());
-
-  // Add the new code several times to the optimized code map and also set an
-  // allocation timeout so that expanding the code map will trigger a GC.
-  heap->set_allocation_timeout(5);
-  FLAG_gc_interval = 1000;
-  for (int i = 0; i < 10; ++i) {
-    BailoutId id = BailoutId(i + 1);
-    Context::AddToOSROptimizedCodeCache(context, shared, code, id);
-  }
-}
-#endif  // DEBUG
 
 TEST(Regress513496) {
   FLAG_allow_natives_syntax = true;
@@ -3869,9 +3639,9 @@ TEST(Regress513496) {
 
 TEST(LargeObjectSlotRecording) {
   if (!FLAG_incremental_marking) return;
-  FLAG_concurrent_marking = false;
+  if (FLAG_never_compact) return;
+  ManualGCScope manual_gc_scope;
   FLAG_manual_evacuation_candidates_selection = true;
-  FLAG_stress_incremental_marking = false;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
@@ -4073,6 +3843,95 @@ TEST(EnsureAllocationSiteDependentCodesProcessed) {
         WeakCell::cast(site->dependent_code()->object_at(0))->cleared());
 }
 
+TEST(AllocationSiteCreation) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Heap* heap = isolate->heap();
+  HandleScope scope(isolate);
+
+  int prev_count = 0;
+  int count = 0;
+
+  // Array literals.
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("(function f1() { return []; })()");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(1, count - prev_count);
+
+  prev_count = count;
+  CompileRun("(function f2() { return [1, 2]; })()");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(1, count - prev_count);
+
+  prev_count = count;
+  CompileRun("(function f3() { return [[1], [2]]; })()");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(3, count - prev_count);
+
+  prev_count = count;
+  CompileRun(
+      "(function f4() { "
+      "return [0, [1, 1.1, 1.2, "
+      "], 1.5, [2.1, 2.2], 3];"
+      "})()");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(3, count - prev_count);
+
+  // Object literals have lazy AllocationSites
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("function f5() { return {}; }; f5(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(0, count - prev_count);
+  // Allocation-sites + boilerplates are created on the second run only.
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("f5(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(1, count - prev_count);
+
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("function f6() { return {a:1}; }; f6(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(0, count - prev_count);
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("f6(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(1, count - prev_count);
+
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("function f7() { return {a:1, b:2}; }; f7(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(0, count - prev_count);
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("f7(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(1, count - prev_count);
+
+  prev_count = AllocationSitesCount(heap);
+  CompileRun(
+      "function f8() {"
+      "return {a:{}, b:{ a:2, c:{ d:{f:{}}} } }; "
+      "}; f8(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(0, count - prev_count);
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("f8(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(6, count - prev_count);
+
+  // We currently eagerly create allocation sites if there are sub-arrays.
+  prev_count = AllocationSitesCount(heap);
+  CompileRun(
+      "function f9() {"
+      "return {a:[1, 2, 3], b:{ a:2, c:{ d:{f:[]} } }}; "
+      "}; f9(); ");
+  count = AllocationSitesCount(heap);
+  CHECK_EQ(6, count - prev_count);
+  prev_count = AllocationSitesCount(heap);
+  CompileRun("f9(); ");
+  count = AllocationSitesCount(heap);
+  // No new AllocationSites created on the second invocation.
+  CHECK_EQ(0, count - prev_count);
+}
 
 TEST(CellsInOptimizedCodeAreWeak) {
   if (FLAG_always_opt || !FLAG_opt) return;
@@ -4160,7 +4019,7 @@ TEST(ObjectsInOptimizedCodeAreWeak) {
 }
 
 TEST(NewSpaceObjectsInOptimizedCode) {
-  if (FLAG_always_opt || !FLAG_opt || FLAG_turbo) return;
+  if (FLAG_always_opt || !FLAG_opt) return;
   FLAG_allow_natives_syntax = true;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
@@ -4648,6 +4507,7 @@ void CheckIC(Handle<JSFunction> function, Code::Kind kind, int slot_index,
 
 TEST(MonomorphicStaysMonomorphicAfterGC) {
   if (FLAG_always_opt) return;
+  ManualGCScope manual_gc_scope;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   v8::HandleScope scope(CcTest::isolate());
@@ -4680,6 +4540,7 @@ TEST(MonomorphicStaysMonomorphicAfterGC) {
 
 TEST(PolymorphicStaysPolymorphicAfterGC) {
   if (FLAG_always_opt) return;
+  ManualGCScope manual_gc_scope;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   v8::HandleScope scope(CcTest::isolate());
@@ -4714,6 +4575,7 @@ TEST(PolymorphicStaysPolymorphicAfterGC) {
 
 
 TEST(WeakCell) {
+  ManualGCScope manual_gc_scope;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   v8::internal::Factory* factory = isolate->factory();
@@ -4748,6 +4610,7 @@ TEST(WeakCell) {
 
 TEST(WeakCellsWithIncrementalMarking) {
   if (!FLAG_incremental_marking) return;
+  ManualGCScope manual_gc_scope;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   v8::internal::Heap* heap = CcTest::heap();
@@ -4865,7 +4728,7 @@ HEAP_TEST(Regress538257) {
   FLAG_manual_evacuation_candidates_selection = true;
   v8::Isolate::CreateParams create_params;
   // Set heap limits.
-  create_params.constraints.set_max_semi_space_size(1);
+  create_params.constraints.set_max_semi_space_size_in_kb(1024);
   create_params.constraints.set_max_old_space_size(6);
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -4942,83 +4805,6 @@ TEST(Regress507979) {
   }
 }
 
-
-UNINITIALIZED_TEST(PromotionQueue) {
-  FLAG_expose_gc = true;
-  FLAG_max_semi_space_size = 2 * Page::kPageSize / MB;
-  FLAG_min_semi_space_size = FLAG_max_semi_space_size;
-  v8::Isolate::CreateParams create_params;
-  create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
-  v8::Isolate* isolate = v8::Isolate::New(create_params);
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  {
-    v8::Isolate::Scope isolate_scope(isolate);
-    v8::HandleScope handle_scope(isolate);
-    v8::Context::New(isolate)->Enter();
-    Heap* heap = i_isolate->heap();
-    NewSpace* new_space = heap->new_space();
-
-    // In this test we will try to overwrite the promotion queue which is at the
-    // end of to-space. To actually make that possible, we need at least two
-    // semi-space pages and take advantage of fragmentation.
-    // (1) Use a semi-space consisting of two pages.
-    // (2) Create a few small long living objects and call the scavenger to
-    // move them to the other semi-space.
-    // (3) Create a huge object, i.e., remainder of first semi-space page and
-    // create another huge object which should be of maximum allocatable memory
-    // size of the second semi-space page.
-    // (4) Call the scavenger again.
-    // What will happen is: the scavenger will promote the objects created in
-    // (2) and will create promotion queue entries at the end of the second
-    // semi-space page during the next scavenge when it promotes the objects to
-    // the old generation. The first allocation of (3) will fill up the first
-    // semi-space page. The second allocation in (3) will not fit into the
-    // first semi-space page, but it will overwrite the promotion queue which
-    // are in the second semi-space page. If the right guards are in place, the
-    // promotion queue will be evacuated in that case.
-
-
-    CHECK(new_space->IsAtMaximumCapacity());
-    CHECK_EQ(static_cast<size_t>(FLAG_min_semi_space_size * MB),
-             new_space->TotalCapacity());
-
-    // Call the scavenger two times to get an empty new space
-    heap->CollectGarbage(NEW_SPACE, i::GarbageCollectionReason::kTesting);
-    heap->CollectGarbage(NEW_SPACE, i::GarbageCollectionReason::kTesting);
-
-    // First create a few objects which will survive a scavenge, and will get
-    // promoted to the old generation later on. These objects will create
-    // promotion queue entries at the end of the second semi-space page.
-    const int number_handles = 12;
-    Handle<FixedArray> handles[number_handles];
-    for (int i = 0; i < number_handles; i++) {
-      handles[i] = i_isolate->factory()->NewFixedArray(1, NOT_TENURED);
-    }
-
-    heap->CollectGarbage(NEW_SPACE, i::GarbageCollectionReason::kTesting);
-    CHECK_EQ(static_cast<size_t>(FLAG_min_semi_space_size * MB),
-             new_space->TotalCapacity());
-
-    // Fill-up the first semi-space page.
-    heap::FillUpOnePage(new_space);
-
-    // Create a small object to initialize the bump pointer on the second
-    // semi-space page.
-    Handle<FixedArray> small =
-        i_isolate->factory()->NewFixedArray(1, NOT_TENURED);
-    CHECK(heap->InNewSpace(*small));
-
-    // Fill-up the second semi-space page.
-    heap::FillUpOnePage(new_space);
-
-    // This scavenge will corrupt memory if the promotion queue is not
-    // evacuated.
-    heap->CollectGarbage(NEW_SPACE, i::GarbageCollectionReason::kTesting);
-  }
-  isolate->Dispose();
-}
-
-
 TEST(Regress388880) {
   if (!FLAG_incremental_marking) return;
   FLAG_stress_incremental_marking = false;
@@ -5046,7 +4832,7 @@ TEST(Regress388880) {
   heap::CreatePadding(heap, static_cast<int>(padding_size), TENURED);
 
   Handle<JSObject> o = factory->NewJSObjectFromMap(map1, TENURED);
-  o->set_properties(*factory->empty_fixed_array());
+  o->set_raw_properties_or_hash(*factory->empty_fixed_array());
 
   // Ensure that the object allocated where we need it.
   Page* page = Page::FromAddress(o->address());
@@ -5094,8 +4880,8 @@ TEST(Regress3631) {
       v8::Utils::OpenHandle(*v8::Local<v8::Object>::Cast(result));
   Handle<JSWeakCollection> weak_map(reinterpret_cast<JSWeakCollection*>(*obj));
   HeapObject* weak_map_table = HeapObject::cast(weak_map->table());
-  while (!ObjectMarking::IsBlack(weak_map_table,
-                                 MarkingState::Internal(weak_map_table)) &&
+  while (!ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+             weak_map_table, MarkingState::Internal(weak_map_table)) &&
          !marking->IsStopped()) {
     marking->Step(MB, IncrementalMarking::NO_GC_VIA_STACK_GUARD,
                   IncrementalMarking::FORCE_COMPLETION, StepOrigin::kV8);
@@ -5334,7 +5120,7 @@ TEST(PreprocessStackTrace) {
   CHECK(pos->IsSmi());
 
   Handle<JSArray> stack_trace_array = Handle<JSArray>::cast(stack_trace);
-  int array_length = Smi::cast(stack_trace_array->length())->value();
+  int array_length = Smi::ToInt(stack_trace_array->length());
   for (int i = 0; i < array_length; i++) {
     Handle<Object> element =
         Object::GetElement(isolate, stack_trace, i).ToHandleChecked();
@@ -5405,12 +5191,12 @@ TEST(Regress1878) {
       "for (var i = 0; i < 1000; i++) {"
       "  var ai = new InternalArray(10000);"
       "  if (%HaveSameMap(ai, a)) throw Error();"
-      "  if (!%HasFastObjectElements(ai)) throw Error();"
+      "  if (!%HasObjectElements(ai)) throw Error();"
       "}"
       "for (var i = 0; i < 1000; i++) {"
       "  var ai = new InternalArray(10000);"
       "  if (%HaveSameMap(ai, a)) throw Error();"
-      "  if (!%HasFastObjectElements(ai)) throw Error();"
+      "  if (!%HasObjectElements(ai)) throw Error();"
       "}");
 
   CHECK(!try_catch.HasCaught());
@@ -5551,8 +5337,8 @@ static void RemoveCodeAndGC(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Handle<Object> obj = v8::Utils::OpenHandle(*args[0]);
   Handle<JSFunction> fun = Handle<JSFunction>::cast(obj);
   fun->shared()->ClearBytecodeArray();  // Bytecode is code too.
-  fun->ReplaceCode(*isolate->builtins()->CompileLazy());
-  fun->shared()->ReplaceCode(*isolate->builtins()->CompileLazy());
+  fun->ReplaceCode(*BUILTIN_CODE(isolate, CompileLazy));
+  fun->shared()->ReplaceCode(*BUILTIN_CODE(isolate, CompileLazy));
   CcTest::CollectAllAvailableGarbage();
 }
 
@@ -5777,6 +5563,7 @@ HEAP_TEST(Regress589413) {
 
 TEST(Regress598319) {
   if (!FLAG_incremental_marking) return;
+  ManualGCScope manual_gc_scope;
   // This test ensures that no white objects can cross the progress bar of large
   // objects during incremental marking. It checks this by using Shift() during
   // incremental marking.
@@ -5875,7 +5662,8 @@ TEST(Regress598319) {
   // progress bar, we would fail here.
   for (int i = 0; i < arr.get()->length(); i++) {
     HeapObject* arr_value = HeapObject::cast(arr.get()->get(i));
-    CHECK(ObjectMarking::IsBlack(arr_value, MarkingState::Internal(arr_value)));
+    CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+        arr_value, MarkingState::Internal(arr_value)));
   }
 }
 
@@ -6022,13 +5810,15 @@ TEST(LeftTrimFixedArrayInBlackArea) {
   isolate->factory()->NewFixedArray(4, TENURED);
   Handle<FixedArray> array = isolate->factory()->NewFixedArray(50, TENURED);
   CHECK(heap->old_space()->Contains(*array));
-  CHECK(ObjectMarking::IsBlack(*array, MarkingState::Internal(*array)));
+  CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+      *array, MarkingState::Internal(*array)));
 
   // Now left trim the allocated black area. A filler has to be installed
   // for the trimmed area and all mark bits of the trimmed area have to be
   // cleared.
   FixedArrayBase* trimmed = heap->LeftTrimFixedArray(*array, 10);
-  CHECK(ObjectMarking::IsBlack(trimmed, MarkingState::Internal(trimmed)));
+  CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+      trimmed, MarkingState::Internal(trimmed)));
 
   heap::GcAndSweep(heap, OLD_SPACE);
 }
@@ -6065,7 +5855,8 @@ TEST(ContinuousLeftTrimFixedArrayInBlackArea) {
   Address start_address = array->address();
   Address end_address = start_address + array->Size();
   Page* page = Page::FromAddress(start_address);
-  CHECK(ObjectMarking::IsBlack(*array, MarkingState::Internal(*array)));
+  CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+      *array, MarkingState::Internal(*array)));
   CHECK(MarkingState::Internal(page).bitmap()->AllBitsSetInRange(
       page->AddressToMarkbitIndex(start_address),
       page->AddressToMarkbitIndex(end_address)));
@@ -6079,8 +5870,10 @@ TEST(ContinuousLeftTrimFixedArrayInBlackArea) {
     trimmed = heap->LeftTrimFixedArray(previous, 1);
     HeapObject* filler = HeapObject::FromAddress(previous->address());
     CHECK(filler->IsFiller());
-    CHECK(ObjectMarking::IsBlack(trimmed, MarkingState::Internal(trimmed)));
-    CHECK(ObjectMarking::IsBlack(previous, MarkingState::Internal(previous)));
+    CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+        trimmed, MarkingState::Internal(trimmed)));
+    CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+        previous, MarkingState::Internal(previous)));
     previous = trimmed;
   }
 
@@ -6090,8 +5883,10 @@ TEST(ContinuousLeftTrimFixedArrayInBlackArea) {
       trimmed = heap->LeftTrimFixedArray(previous, i);
       HeapObject* filler = HeapObject::FromAddress(previous->address());
       CHECK(filler->IsFiller());
-      CHECK(ObjectMarking::IsBlack(trimmed, MarkingState::Internal(trimmed)));
-      CHECK(ObjectMarking::IsBlack(previous, MarkingState::Internal(previous)));
+      CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+          trimmed, MarkingState::Internal(trimmed)));
+      CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+          previous, MarkingState::Internal(previous)));
       previous = trimmed;
     }
   }
@@ -6131,7 +5926,8 @@ TEST(ContinuousRightTrimFixedArrayInBlackArea) {
   Address start_address = array->address();
   Address end_address = start_address + array->Size();
   Page* page = Page::FromAddress(start_address);
-  CHECK(ObjectMarking::IsBlack(*array, MarkingState::Internal(*array)));
+  CHECK(ObjectMarking::IsBlack<IncrementalMarking::kAtomicity>(
+      *array, MarkingState::Internal(*array)));
 
   CHECK(MarkingState::Internal(page).bitmap()->AllBitsSetInRange(
       page->AddressToMarkbitIndex(start_address),
@@ -6226,46 +6022,56 @@ TEST(RememberedSetRemoveRange) {
     RememberedSet<OLD_TO_NEW>::Insert(chunk, x.first);
   }
 
-  RememberedSet<OLD_TO_NEW>::Iterate(chunk, [&slots](Address addr) {
-    CHECK(slots[addr]);
-    return KEEP_SLOT;
-  });
+  RememberedSet<OLD_TO_NEW>::Iterate(chunk,
+                                     [&slots](Address addr) {
+                                       CHECK(slots[addr]);
+                                       return KEEP_SLOT;
+                                     },
+                                     SlotSet::PREFREE_EMPTY_BUCKETS);
 
   RememberedSet<OLD_TO_NEW>::RemoveRange(chunk, start, start + kPointerSize,
                                          SlotSet::FREE_EMPTY_BUCKETS);
   slots[start] = false;
-  RememberedSet<OLD_TO_NEW>::Iterate(chunk, [&slots](Address addr) {
-    CHECK(slots[addr]);
-    return KEEP_SLOT;
-  });
+  RememberedSet<OLD_TO_NEW>::Iterate(chunk,
+                                     [&slots](Address addr) {
+                                       CHECK(slots[addr]);
+                                       return KEEP_SLOT;
+                                     },
+                                     SlotSet::PREFREE_EMPTY_BUCKETS);
 
   RememberedSet<OLD_TO_NEW>::RemoveRange(chunk, start + kPointerSize,
                                          start + Page::kPageSize,
                                          SlotSet::FREE_EMPTY_BUCKETS);
   slots[start + kPointerSize] = false;
   slots[start + Page::kPageSize - kPointerSize] = false;
-  RememberedSet<OLD_TO_NEW>::Iterate(chunk, [&slots](Address addr) {
-    CHECK(slots[addr]);
-    return KEEP_SLOT;
-  });
+  RememberedSet<OLD_TO_NEW>::Iterate(chunk,
+                                     [&slots](Address addr) {
+                                       CHECK(slots[addr]);
+                                       return KEEP_SLOT;
+                                     },
+                                     SlotSet::PREFREE_EMPTY_BUCKETS);
 
   RememberedSet<OLD_TO_NEW>::RemoveRange(chunk, start,
                                          start + Page::kPageSize + kPointerSize,
                                          SlotSet::FREE_EMPTY_BUCKETS);
   slots[start + Page::kPageSize] = false;
-  RememberedSet<OLD_TO_NEW>::Iterate(chunk, [&slots](Address addr) {
-    CHECK(slots[addr]);
-    return KEEP_SLOT;
-  });
+  RememberedSet<OLD_TO_NEW>::Iterate(chunk,
+                                     [&slots](Address addr) {
+                                       CHECK(slots[addr]);
+                                       return KEEP_SLOT;
+                                     },
+                                     SlotSet::PREFREE_EMPTY_BUCKETS);
 
   RememberedSet<OLD_TO_NEW>::RemoveRange(
       chunk, chunk->area_end() - kPointerSize, chunk->area_end(),
       SlotSet::FREE_EMPTY_BUCKETS);
   slots[chunk->area_end() - kPointerSize] = false;
-  RememberedSet<OLD_TO_NEW>::Iterate(chunk, [&slots](Address addr) {
-    CHECK(slots[addr]);
-    return KEEP_SLOT;
-  });
+  RememberedSet<OLD_TO_NEW>::Iterate(chunk,
+                                     [&slots](Address addr) {
+                                       CHECK(slots[addr]);
+                                       return KEEP_SLOT;
+                                     },
+                                     SlotSet::PREFREE_EMPTY_BUCKETS);
 }
 
 HEAP_TEST(Regress670675) {
@@ -6301,49 +6107,58 @@ HEAP_TEST(Regress670675) {
   DCHECK(marking->IsStopped());
 }
 
+namespace {
+Handle<Code> GenerateDummyImmovableCode(Isolate* isolate) {
+  Assembler assm(isolate, NULL, 256);
+
+  const int kNumberOfNops = 1 << 10;
+  for (int i = 0; i < kNumberOfNops; i++) {
+    assm.nop();  // supported on all architectures
+  }
+
+  CodeDesc desc;
+  assm.GetCode(isolate, &desc);
+  const bool kImmovable = true;
+  Handle<Code> code = isolate->factory()->NewCode(
+      desc, Code::ComputeFlags(Code::STUB), Handle<Code>(), kImmovable);
+  CHECK(code->IsCode());
+
+  return code;
+}
+}  // namespace
+
 HEAP_TEST(Regress5831) {
   CcTest::InitializeVM();
   Heap* heap = CcTest::heap();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope handle_scope(isolate);
 
-  // Used to ensure that the first code space page remains filled.
-  Handle<FixedArray> array = isolate->factory()->NewFixedArray(32);
+  // Used to ensure that the generated code is not collected.
+  const int kInitialSize = 32;
+  Handle<FixedArray> array = isolate->factory()->NewFixedArray(kInitialSize);
 
-  {
-    // Ensure that the first code space page is full.
-    CEntryStub stub(isolate, 1);
-    Handle<Code> code = stub.GetCode();
-
-    int i = 0;
-    array = FixedArray::SetAndGrow(array, i++, code);
-
-    while (heap->code_space()->FirstPage()->Contains(code->address())) {
-      code = isolate->factory()->CopyCode(code);
-      array = FixedArray::SetAndGrow(array, i++, code);
+  // Ensure that all immovable code space pages are full and we overflow into
+  // LO_SPACE.
+  const int kMaxIterations = 1 << 16;
+  bool overflowed_into_lospace = false;
+  for (int i = 0; i < kMaxIterations; i++) {
+    Handle<Code> code = GenerateDummyImmovableCode(isolate);
+    array = FixedArray::SetAndGrow(array, i, code);
+    CHECK(heap->code_space()->Contains(code->address()) ||
+          heap->lo_space()->Contains(*code));
+    if (heap->lo_space()->Contains(*code)) {
+      overflowed_into_lospace = true;
+      break;
     }
   }
 
-  class ImmovableCEntryStub : public i::CEntryStub {
-   public:
-    explicit ImmovableCEntryStub(i::Isolate* isolate)
-        : i::CEntryStub(isolate, 3, i::kSaveFPRegs, i::kArgvOnStack, true) {}
-    bool NeedsImmovableCode() override { return true; }
-  };
-
-  ImmovableCEntryStub stub(isolate);
-
-  {
-    // Make sure the code object has not yet been generated.
-    Code* code;
-    CHECK(!stub.FindCodeInCache(&code));
-  }
+  CHECK(overflowed_into_lospace);
 
   // Fake a serializer run.
   isolate->serializer_enabled_ = true;
 
   // Generate the code.
-  Handle<Code> code = stub.GetCode();
+  Handle<Code> code = GenerateDummyImmovableCode(isolate);
   CHECK(code->Size() <= i::kMaxRegularHeapObjectSize);
   CHECK(!heap->code_space()->FirstPage()->Contains(code->address()));
 
@@ -6384,6 +6199,27 @@ HEAP_TEST(RegressMissingWriteBarrierInAllocate) {
     collector->EnsureSweepingCompleted();
   }
   CHECK(object->map()->IsMap());
+}
+
+UNINITIALIZED_TEST(ReinitializeStringHashSeed) {
+  // Enable rehashing and create an isolate and context.
+  i::FLAG_rehash_snapshot = true;
+  for (int i = 1; i < 3; i++) {
+    i::FLAG_hash_seed = 1337 * i;
+    v8::Isolate::CreateParams create_params;
+    create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
+    v8::Isolate* isolate = v8::Isolate::New(create_params);
+    {
+      v8::Isolate::Scope isolate_scope(isolate);
+      CHECK_EQ(1337 * i,
+               reinterpret_cast<i::Isolate*>(isolate)->heap()->HashSeed());
+      v8::HandleScope handle_scope(isolate);
+      v8::Local<v8::Context> context = v8::Context::New(isolate);
+      CHECK(!context.IsEmpty());
+      v8::Context::Scope context_scope(context);
+    }
+    isolate->Dispose();
+  }
 }
 
 }  // namespace internal

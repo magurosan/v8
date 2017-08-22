@@ -33,6 +33,7 @@
 #include "src/debug/debug.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
+#include "src/frames-inl.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 
@@ -1306,12 +1307,6 @@ TEST(ctc1_cfc1_disasm) {
 
 TEST(madd_msub_maddf_msubf) {
   SET_UP();
-  if (kArchVariant == kMips64r2) {
-    COMPARE(madd_s(f4, f6, f8, f10), "4cca4120       madd.s  f4, f6, f8, f10");
-    COMPARE(madd_d(f4, f6, f8, f10), "4cca4121       madd.d  f4, f6, f8, f10");
-    COMPARE(msub_s(f4, f6, f8, f10), "4cca4128       msub.s  f4, f6, f8, f10");
-    COMPARE(msub_d(f4, f6, f8, f10), "4cca4129       msub.d  f4, f6, f8, f10");
-  }
   if (kArchVariant == kMips64r6) {
     COMPARE(maddf_s(f4, f8, f10), "460a4118       maddf.s  f4, f8, f10");
     COMPARE(maddf_d(f4, f8, f10), "462a4118       maddf.d  f4, f8, f10");

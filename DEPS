@@ -8,23 +8,23 @@ vars = {
 
 deps = {
   "v8/build":
-    Var("chromium_url") + "/chromium/src/build.git" + "@" + "d122cd769ff98cfd46c563a134ddc0445fed38f6",
+    Var("chromium_url") + "/chromium/src/build.git" + "@" + "b6996c4c64c9d223d2215de793dbd403a3e653be",
   "v8/tools/gyp":
-    Var("chromium_url") + "/external/gyp.git" + "@" + "eb296f67da078ec01f5e3a9ea9cdc6d26d680161",
+    Var("chromium_url") + "/external/gyp.git" + "@" + "d61a9397e668fa9843c4aa7da9e79460fe590bfb",
   "v8/third_party/icu":
-    Var("chromium_url") + "/chromium/deps/icu.git" + "@" + "dfa798fe694702b43a3debc3290761f22b1acaf8",
+    Var("chromium_url") + "/chromium/deps/icu.git" + "@" + "98218d1e92b919412ac4b27e5af8e37138d7e347",
   "v8/third_party/instrumented_libraries":
     Var("chromium_url") + "/chromium/src/third_party/instrumented_libraries.git" + "@" + "644afd349826cb68204226a16c38bde13abe9c3c",
   "v8/buildtools":
-    Var("chromium_url") + "/chromium/buildtools.git" + "@" + "31d4daad5d9af672d4e234570a24f3fd844bb713",
+    Var("chromium_url") + "/chromium/buildtools.git" + "@" + "f4bcb07d88cdb7d748813c3d150e08bf88435fb9",
   "v8/base/trace_event/common":
-    Var("chromium_url") + "/chromium/src/base/trace_event/common.git" + "@" + "39a3450531fc73432e963db8668695d2e8f13053",
+    Var("chromium_url") + "/chromium/src/base/trace_event/common.git" + "@" + "65d1d42a5df6c0a563a6fdfa58a135679185e5d9",
   "v8/third_party/jinja2":
     Var("chromium_url") + "/chromium/src/third_party/jinja2.git" + "@" + "d34383206fa42d52faa10bb9931d6d538f3a57e0",
   "v8/third_party/markupsafe":
     Var("chromium_url") + "/chromium/src/third_party/markupsafe.git" + "@" + "8f45f5cfa0009d2a70589bcda0349b8cb2b72783",
   "v8/tools/swarming_client":
-    Var('chromium_url') + '/external/swarming.client.git' + '@' + "5c4eed8883548ba78c886ef26986b81b1be723a4",
+    Var('chromium_url') + '/external/swarming.client.git' + '@' + "42721e128da760b345ab60d7cf34e300269112d7",
   "v8/testing/gtest":
     Var("chromium_url") + "/external/github.com/google/googletest.git" + "@" + "6f8a66431cb592dad629028a50b3dd418a408c87",
   "v8/testing/gmock":
@@ -34,21 +34,21 @@ deps = {
   "v8/test/mozilla/data":
     Var("chromium_url") + "/v8/deps/third_party/mozilla-tests.git" + "@" + "f6c578a10ea707b1a8ab0b88943fe5115ce2b9be",
   "v8/test/test262/data":
-    Var("chromium_url") + "/external/github.com/tc39/test262.git" + "@" + "d5e1150325e93e76774c0f4b779ef17bebdc07d6",
+    Var("chromium_url") + "/external/github.com/tc39/test262.git" + "@" + "1b911a8f8abf4cb63882cfbe72dcd4c82bb8ad91",
   "v8/test/test262/harness":
     Var("chromium_url") + "/external/github.com/test262-utils/test262-harness-py.git" + "@" + "0f2acdd882c84cff43b9d60df7574a1901e2cdcd",
   "v8/tools/clang":
-    Var("chromium_url") + "/chromium/src/tools/clang.git" + "@" + "7474c164400afb1414249dc61f48c0f8c56bfac6",
+    Var("chromium_url") + "/chromium/src/tools/clang.git" + "@" + "7770b47ac41c457739a5f3b6932cb1f479dee0e1",
   "v8/test/wasm-js":
-    Var("chromium_url") + "/external/github.com/WebAssembly/spec.git" + "@" + "c4774b47d326e4114f96232f1389a555639d7348",
+    Var("chromium_url") + "/external/github.com/WebAssembly/spec.git" + "@" + "17b4a4d98c80b1ec736649d5a73496a0e6d12d4c",
 }
 
 deps_os = {
   "android": {
     "v8/third_party/android_tools":
-      Var("chromium_url") + "/android_tools.git" + "@" + "cb6bc21107001e2f2eeee2707b482b2b755baf51",
+      Var("chromium_url") + "/android_tools.git" + "@" + "e9d4018e149d50172ed462a7c21137aa915940ec",
     "v8/third_party/catapult":
-      Var('chromium_url') + "/external/github.com/catapult-project/catapult.git" + "@" + "3919ea65c283bd0480b5c7fca196acc4d571fad4",
+      Var('chromium_url') + "/external/github.com/catapult-project/catapult.git" + "@" + "bd05965e45572ae06d1a7139759a85a3d9a1a27c",
   },
 }
 
@@ -268,12 +268,6 @@ hooks = [
     'name': 'clang',
     'pattern': '.',
     'action': ['python', 'v8/tools/clang/scripts/update.py', '--if-needed'],
-  },
-  {
-    # Pull gold plugin if needed or requested via GYP_DEFINES.
-    'name': 'gold_plugin',
-    'pattern': '.',
-    'action': ['python', 'v8/gypfiles/download_gold_plugin.py'],
   },
   {
     # A change to a .gyp, .gypi, or to GYP itself should run the generator.

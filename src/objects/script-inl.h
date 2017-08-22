@@ -5,7 +5,9 @@
 #ifndef V8_OBJECTS_SCRIPT_INL_H_
 #define V8_OBJECTS_SCRIPT_INL_H_
 
-#include "src/objects/code-cache.h"
+#include "src/objects/script.h"
+
+#include "src/objects/string-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -34,8 +36,6 @@ ACCESSORS(Script, source_url, Object, kSourceUrlOffset)
 ACCESSORS(Script, source_mapping_url, Object, kSourceMappingUrlOffset)
 ACCESSORS_CHECKED(Script, wasm_compiled_module, Object, kEvalFromSharedOffset,
                   this->type() == TYPE_WASM)
-ACCESSORS(Script, preparsed_scope_data, PodArray<uint32_t>,
-          kPreParsedScopeDataOffset)
 
 Script::CompilationType Script::compilation_type() {
   return BooleanBit::get(flags(), kCompilationTypeBit) ? COMPILATION_TYPE_EVAL

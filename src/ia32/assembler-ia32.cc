@@ -49,6 +49,7 @@
 
 #include "src/base/bits.h"
 #include "src/base/cpu.h"
+#include "src/code-stubs.h"
 #include "src/disassembler.h"
 #include "src/macro-assembler.h"
 #include "src/v8.h"
@@ -60,8 +61,15 @@ Immediate Immediate::EmbeddedNumber(double value) {
   int32_t smi;
   if (DoubleToSmiInteger(value, &smi)) return Immediate(Smi::FromInt(smi));
   Immediate result(0, RelocInfo::EMBEDDED_OBJECT);
-  result.is_heap_number_ = true;
-  result.value_.heap_number = value;
+  result.is_heap_object_request_ = true;
+  result.value_.heap_object_request = HeapObjectRequest(value);
+  return result;
+}
+
+Immediate Immediate::EmbeddedCode(CodeStub* stub) {
+  Immediate result(0, RelocInfo::CODE_TARGET);
+  result.is_heap_object_request_ = true;
+  result.value_.heap_object_request = HeapObjectRequest(stub);
   return result;
 }
 
@@ -122,6 +130,7 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   if (cross_compile) return;
 
   if (cpu.has_sse41() && FLAG_enable_sse4_1) supported_ |= 1u << SSE4_1;
+  if (cpu.has_ssse3() && FLAG_enable_ssse3) supported_ |= 1u << SSSE3;
   if (cpu.has_sse3() && FLAG_enable_sse3) supported_ |= 1u << SSE3;
   if (cpu.has_avx() && FLAG_enable_avx && cpu.has_osxsave() &&
       OSHasAVXSupport()) {
@@ -146,13 +155,13 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
 void CpuFeatures::PrintTarget() { }
 void CpuFeatures::PrintFeatures() {
   printf(
-      "SSE3=%d SSE4_1=%d AVX=%d FMA3=%d BMI1=%d BMI2=%d LZCNT=%d POPCNT=%d "
-      "ATOM=%d\n",
-      CpuFeatures::IsSupported(SSE3), CpuFeatures::IsSupported(SSE4_1),
-      CpuFeatures::IsSupported(AVX), CpuFeatures::IsSupported(FMA3),
-      CpuFeatures::IsSupported(BMI1), CpuFeatures::IsSupported(BMI2),
-      CpuFeatures::IsSupported(LZCNT), CpuFeatures::IsSupported(POPCNT),
-      CpuFeatures::IsSupported(ATOM));
+      "SSE3=%d SSSE3=%d SSE4_1=%d AVX=%d FMA3=%d BMI1=%d BMI2=%d LZCNT=%d "
+      "POPCNT=%d ATOM=%d\n",
+      CpuFeatures::IsSupported(SSE3), CpuFeatures::IsSupported(SSSE3),
+      CpuFeatures::IsSupported(SSE4_1), CpuFeatures::IsSupported(AVX),
+      CpuFeatures::IsSupported(FMA3), CpuFeatures::IsSupported(BMI1),
+      CpuFeatures::IsSupported(BMI2), CpuFeatures::IsSupported(LZCNT),
+      CpuFeatures::IsSupported(POPCNT), CpuFeatures::IsSupported(ATOM));
 }
 
 
@@ -307,6 +316,23 @@ Register Operand::reg() const {
   return Register::from_code(buf_[0] & 0x07);
 }
 
+void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
+  for (auto& request : heap_object_requests_) {
+    Handle<HeapObject> object;
+    switch (request.kind()) {
+      case HeapObjectRequest::kHeapNumber:
+        object = isolate->factory()->NewHeapNumber(request.heap_number(),
+                                                   IMMUTABLE, TENURED);
+        break;
+      case HeapObjectRequest::kCodeStub:
+        request.code_stub()->set_isolate(isolate);
+        object = request.code_stub()->GetCode();
+        break;
+    }
+    Address pc = buffer_ + request.offset();
+    Memory::Object_Handle_at(pc) = object;
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Implementation of Assembler.
@@ -334,7 +360,7 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
   // that we are still not overlapping instructions and relocation info).
   DCHECK(pc_ <= reloc_info_writer.pos());  // No overlap.
 
-  AllocateRequestedHeapNumbers(isolate);
+  AllocateAndInstallRequestedHeapObjects(isolate);
 
   // Set up code descriptor.
   desc->buffer = buffer_;
@@ -349,7 +375,7 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
 
 
 void Assembler::Align(int m) {
-  DCHECK(base::bits::IsPowerOfTwo32(m));
+  DCHECK(base::bits::IsPowerOfTwo(m));
   int mask = m - 1;
   int addr = pc_offset();
   Nop((m - (addr & mask)) & mask);
@@ -589,8 +615,7 @@ void Assembler::mov(Register dst, const Immediate& x) {
   emit(x);
 }
 
-
-void Assembler::mov(Register dst, Handle<Object> handle) {
+void Assembler::mov(Register dst, Handle<HeapObject> handle) {
   EnsureSpace ensure_space(this);
   EMIT(0xB8 | dst.code());
   emit(handle);
@@ -618,8 +643,7 @@ void Assembler::mov(const Operand& dst, const Immediate& x) {
   emit(x);
 }
 
-
-void Assembler::mov(const Operand& dst, Handle<Object> handle) {
+void Assembler::mov(const Operand& dst, Handle<HeapObject> handle) {
   EnsureSpace ensure_space(this);
   EMIT(0xC7);
   emit_operand(eax, dst);
@@ -881,8 +905,7 @@ void Assembler::cmp(Register reg, int32_t imm32) {
   emit_arith(7, Operand(reg), Immediate(imm32));
 }
 
-
-void Assembler::cmp(Register reg, Handle<Object> handle) {
+void Assembler::cmp(Register reg, Handle<HeapObject> handle) {
   EnsureSpace ensure_space(this);
   emit_arith(7, Operand(reg), Immediate(handle));
 }
@@ -905,8 +928,7 @@ void Assembler::cmp(const Operand& op, const Immediate& imm) {
   emit_arith(7, op, imm);
 }
 
-
-void Assembler::cmp(const Operand& op, Handle<Object> handle) {
+void Assembler::cmp(const Operand& op, Handle<HeapObject> handle) {
   EnsureSpace ensure_space(this);
   emit_arith(7, op, Immediate(handle));
 }
@@ -1591,17 +1613,19 @@ int Assembler::CallSize(Handle<Code> code, RelocInfo::Mode rmode) {
   return 1 /* EMIT */ + sizeof(uint32_t) /* emit */;
 }
 
-
-void Assembler::call(Handle<Code> code,
-                     RelocInfo::Mode rmode,
-                     TypeFeedbackId ast_id) {
+void Assembler::call(Handle<Code> code, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   DCHECK(RelocInfo::IsCodeTarget(rmode)
       || rmode == RelocInfo::CODE_AGE_SEQUENCE);
   EMIT(0xE8);
-  emit(code, rmode, ast_id);
+  emit(code, rmode);
 }
 
+void Assembler::call(CodeStub* stub) {
+  EnsureSpace ensure_space(this);
+  EMIT(0xE8);
+  emit(Immediate::EmbeddedCode(stub));
+}
 
 void Assembler::jmp(Label* L, Label::Distance distance) {
   EnsureSpace ensure_space(this);
@@ -2683,8 +2707,16 @@ void Assembler::psrlq(XMMRegister dst, XMMRegister src) {
   emit_sse_operand(dst, src);
 }
 
+void Assembler::pshuflw(XMMRegister dst, const Operand& src, uint8_t shuffle) {
+  EnsureSpace ensure_space(this);
+  EMIT(0xF2);
+  EMIT(0x0F);
+  EMIT(0x70);
+  emit_sse_operand(dst, src);
+  EMIT(shuffle);
+}
 
-void Assembler::pshufd(XMMRegister dst, XMMRegister src, uint8_t shuffle) {
+void Assembler::pshufd(XMMRegister dst, const Operand& src, uint8_t shuffle) {
   EnsureSpace ensure_space(this);
   EMIT(0x66);
   EMIT(0x0F);
@@ -2693,6 +2725,27 @@ void Assembler::pshufd(XMMRegister dst, XMMRegister src, uint8_t shuffle) {
   EMIT(shuffle);
 }
 
+void Assembler::pextrb(const Operand& dst, XMMRegister src, int8_t offset) {
+  DCHECK(IsEnabled(SSE4_1));
+  EnsureSpace ensure_space(this);
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x3A);
+  EMIT(0x14);
+  emit_sse_operand(src, dst);
+  EMIT(offset);
+}
+
+void Assembler::pextrw(const Operand& dst, XMMRegister src, int8_t offset) {
+  DCHECK(IsEnabled(SSE4_1));
+  EnsureSpace ensure_space(this);
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x3A);
+  EMIT(0x15);
+  emit_sse_operand(src, dst);
+  EMIT(offset);
+}
 
 void Assembler::pextrd(const Operand& dst, XMMRegister src, int8_t offset) {
   DCHECK(IsEnabled(SSE4_1));
@@ -2702,6 +2755,17 @@ void Assembler::pextrd(const Operand& dst, XMMRegister src, int8_t offset) {
   EMIT(0x3A);
   EMIT(0x16);
   emit_sse_operand(src, dst);
+  EMIT(offset);
+}
+
+void Assembler::pinsrb(XMMRegister dst, const Operand& src, int8_t offset) {
+  DCHECK(IsEnabled(SSE4_1));
+  EnsureSpace ensure_space(this);
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x3A);
+  EMIT(0x20);
+  emit_sse_operand(dst, src);
   EMIT(offset);
 }
 
@@ -2884,6 +2948,49 @@ void Assembler::vpsrad(XMMRegister dst, XMMRegister src, int8_t imm8) {
   EMIT(imm8);
 }
 
+void Assembler::vpshuflw(XMMRegister dst, const Operand& src, uint8_t shuffle) {
+  vinstr(0x70, dst, xmm0, src, kF2, k0F, kWIG);
+  EMIT(shuffle);
+}
+
+void Assembler::vpshufd(XMMRegister dst, const Operand& src, uint8_t shuffle) {
+  vinstr(0x70, dst, xmm0, src, k66, k0F, kWIG);
+  EMIT(shuffle);
+}
+
+void Assembler::vpextrb(const Operand& dst, XMMRegister src, int8_t offset) {
+  vinstr(0x14, src, xmm0, dst, k66, k0F3A, kWIG);
+  EMIT(offset);
+}
+
+void Assembler::vpextrw(const Operand& dst, XMMRegister src, int8_t offset) {
+  vinstr(0x15, src, xmm0, dst, k66, k0F3A, kWIG);
+  EMIT(offset);
+}
+
+void Assembler::vpextrd(const Operand& dst, XMMRegister src, int8_t offset) {
+  vinstr(0x16, src, xmm0, dst, k66, k0F3A, kWIG);
+  EMIT(offset);
+}
+
+void Assembler::vpinsrb(XMMRegister dst, XMMRegister src1, const Operand& src2,
+                        int8_t offset) {
+  vinstr(0x20, dst, src1, src2, k66, k0F3A, kWIG);
+  EMIT(offset);
+}
+
+void Assembler::vpinsrw(XMMRegister dst, XMMRegister src1, const Operand& src2,
+                        int8_t offset) {
+  vinstr(0xC4, dst, src1, src2, k66, k0F, kWIG);
+  EMIT(offset);
+}
+
+void Assembler::vpinsrd(XMMRegister dst, XMMRegister src1, const Operand& src2,
+                        int8_t offset) {
+  vinstr(0x22, dst, src1, src2, k66, k0F3A, kWIG);
+  EMIT(offset);
+}
+
 void Assembler::bmi1(byte op, Register reg, Register vreg, const Operand& rm) {
   DCHECK(IsEnabled(BMI1));
   EnsureSpace ensure_space(this);
@@ -2949,6 +3056,17 @@ void Assembler::sse2_instr(XMMRegister dst, const Operand& src, byte prefix,
   EnsureSpace ensure_space(this);
   EMIT(prefix);
   EMIT(escape);
+  EMIT(opcode);
+  emit_sse_operand(dst, src);
+}
+
+void Assembler::ssse3_instr(XMMRegister dst, const Operand& src, byte prefix,
+                            byte escape1, byte escape2, byte opcode) {
+  DCHECK(IsEnabled(SSSE3));
+  EnsureSpace ensure_space(this);
+  EMIT(prefix);
+  EMIT(escape1);
+  EMIT(escape2);
   EMIT(opcode);
   emit_sse_operand(dst, src);
 }
@@ -3026,9 +3144,7 @@ void Assembler::GrowBuffer() {
 
   // Some internal data structures overflow for very large buffers,
   // they must ensure that kMaximalBufferSize is not too large.
-  if (desc.buffer_size > kMaximalBufferSize ||
-      static_cast<size_t>(desc.buffer_size) >
-          isolate_data().max_old_generation_size_) {
+  if (desc.buffer_size > kMaximalBufferSize) {
     V8::FatalProcessOutOfMemory("Assembler::GrowBuffer");
   }
 

@@ -8,7 +8,6 @@
 #include "src/allocation.h"
 #include "src/builtins/builtins.h"
 #include "src/code-stub-assembler.h"
-#include "src/frames.h"
 #include "src/globals.h"
 #include "src/interpreter/bytecode-register.h"
 #include "src/interpreter/bytecodes.h"
@@ -45,6 +44,9 @@ class V8_EXPORT_PRIVATE InterpreterAssembler : public CodeStubAssembler {
   // Returns the word-size unsigned immediate for bytecode operand
   // |operand_index| in the current bytecode.
   compiler::Node* BytecodeOperandUImmWord(int operand_index);
+  // Returns the unsigned smi immediate for bytecode operand |operand_index| in
+  // the current bytecode.
+  compiler::Node* BytecodeOperandUImmSmi(int operand_index);
   // Returns the 32-bit signed immediate for bytecode operand |operand_index|
   // in the current bytecode.
   compiler::Node* BytecodeOperandImm(int operand_index);
@@ -117,26 +119,18 @@ class V8_EXPORT_PRIVATE InterpreterAssembler : public CodeStubAssembler {
   compiler::Node* IncrementCallCount(compiler::Node* feedback_vector,
                                      compiler::Node* slot_id);
 
-  // Call JSFunction or Callable |function| with |arg_count| arguments (not
-  // including receiver) and the first argument located at |first_arg|. Type
-  // feedback is collected in the slot at index |slot_id|.
-  //
-  // If the |receiver_mode| is kNullOrUndefined, then the receiver is implicitly
-  // undefined and |first_arg| is the first parameter. Otherwise, |first_arg| is
-  // the receiver and it is converted according to |receiver_mode|.
-  compiler::Node* CallJSWithFeedback(
-      compiler::Node* function, compiler::Node* context,
-      compiler::Node* first_arg, compiler::Node* arg_count,
-      compiler::Node* slot_id, compiler::Node* feedback_vector,
-      ConvertReceiverMode receiver_mode, TailCallMode tail_call_mode);
+  // Collect CALL_IC feedback for |target| function in the
+  // |feedback_vector| at |slot_id|.
+  void CollectCallFeedback(compiler::Node* target, compiler::Node* context,
+                           compiler::Node* slot_id,
+                           compiler::Node* feedback_vector);
 
   // Call JSFunction or Callable |function| with |arg_count| arguments (not
   // including receiver) and the first argument located at |first_arg|, possibly
   // including the receiver depending on |receiver_mode|.
   compiler::Node* CallJS(compiler::Node* function, compiler::Node* context,
                          compiler::Node* first_arg, compiler::Node* arg_count,
-                         ConvertReceiverMode receiver_mode,
-                         TailCallMode tail_call_mode);
+                         ConvertReceiverMode receiver_mode);
 
   // Call JSFunction or Callable |function| with |arg_count|
   // arguments (not including receiver) and the first argument
@@ -144,28 +138,32 @@ class V8_EXPORT_PRIVATE InterpreterAssembler : public CodeStubAssembler {
   compiler::Node* CallJSWithSpread(compiler::Node* function,
                                    compiler::Node* context,
                                    compiler::Node* first_arg,
-                                   compiler::Node* arg_count);
+                                   compiler::Node* arg_count,
+                                   compiler::Node* slot_id,
+                                   compiler::Node* feedback_vector);
 
-  // Call constructor |constructor| with |arg_count| arguments (not
+  // Call constructor |target| with |arg_count| arguments (not
   // including receiver) and the first argument located at
   // |first_arg|. The |new_target| is the same as the
-  // |constructor| for the new keyword, but differs for the super
+  // |target| for the new keyword, but differs for the super
   // keyword.
-  compiler::Node* Construct(compiler::Node* constructor,
-                            compiler::Node* context, compiler::Node* new_target,
+  compiler::Node* Construct(compiler::Node* target, compiler::Node* context,
+                            compiler::Node* new_target,
                             compiler::Node* first_arg,
                             compiler::Node* arg_count, compiler::Node* slot_id,
                             compiler::Node* feedback_vector);
 
-  // Call constructor |constructor| with |arg_count| arguments (not including
+  // Call constructor |target| with |arg_count| arguments (not including
   // receiver) and the first argument located at |first_arg|. The last argument
-  // is always a spread. The |new_target| is the same as the |constructor| for
+  // is always a spread. The |new_target| is the same as the |target| for
   // the new keyword, but differs for the super keyword.
-  compiler::Node* ConstructWithSpread(compiler::Node* constructor,
+  compiler::Node* ConstructWithSpread(compiler::Node* target,
                                       compiler::Node* context,
                                       compiler::Node* new_target,
                                       compiler::Node* first_arg,
-                                      compiler::Node* arg_count);
+                                      compiler::Node* arg_count,
+                                      compiler::Node* slot_id,
+                                      compiler::Node* feedback_vector);
 
   // Call runtime function with |arg_count| arguments and the first argument
   // located at |first_arg|.
@@ -350,6 +348,7 @@ class V8_EXPORT_PRIVATE InterpreterAssembler : public CodeStubAssembler {
   CodeStubAssembler::Variable bytecode_offset_;
   CodeStubAssembler::Variable interpreted_frame_pointer_;
   CodeStubAssembler::Variable bytecode_array_;
+  bool bytecode_array_valid_;
   CodeStubAssembler::Variable dispatch_table_;
   CodeStubAssembler::Variable accumulator_;
   AccumulatorUse accumulator_use_;

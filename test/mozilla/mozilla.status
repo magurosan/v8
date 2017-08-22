@@ -115,6 +115,9 @@
   # Function declarations are no longer allowed as the body of a with statement.
   'js1_5/Regress/regress-326453': [FAIL],
 
+  # Invalid according to ES2015 syntax. (Details: crbug.com/726625)
+  'ecma_3/extensions/regress-368516': [FAIL],
+
   ##################### SKIPPED TESTS #####################
 
   # This test checks that we behave properly in an out-of-memory
@@ -297,9 +300,6 @@
   # Any local 'arguments' variable should not be allowed to shadow the value
   # returned via the indirect 'arguments' property accessor.
   'js1_4/Functions/function-001': [FAIL_OK],
-
-  # toPrecision argument restricted to range 1..21 in JSC/V8 and ECMA-262
-  'js1_5/Regress/regress-452346': [FAIL_OK],
 
   # Fail because it calls builtins as functions and do not expect the
   # builtin to have undefined as the receiver.
@@ -804,6 +804,11 @@
   # error message in debug mode.
   'js1_5/extensions/regress-336410-1': [FAIL_OK, ['mode == debug and arch == x64', NO_VARIANTS]],
 
+  # These tests fail when --harmony-strict-legacy-accessor-builtins
+  # is enabled.
+  'js1_5/extensions/regress-313500': [SKIP],
+  'js1_5/extensions/regress-325269': [SKIP],
+
   ##################### DECOMPILATION TESTS #####################
 
   # We don't really about the outcome of running the
@@ -920,14 +925,14 @@
   'js1_5/GC/regress-203278-2': [PASS, SLOW, NO_VARIANTS],
 }],  # 'arch == mipsel or arch == mips64el or arch == mips64'
 
-['arch == mipsel and simulator_run == True', {
+['arch == mipsel and simulator_run', {
   # Crashes due to C stack overflow.
   'js1_5/extensions/regress-355497': [SKIP],
-}], # 'arch == mipsel and simulator_run == True'
+}], # 'arch == mipsel and simulator_run'
 
-['arch == mips64el and simulator_run == True', {
+['arch == mips64el and simulator_run', {
   'js1_5/extensions/regress-355497': [FAIL_OK, 'Flags: --sim-stack-size=512'],
-}], # 'arch == mips64el and simulator_run == True'
+}], # 'arch == mips64el and simulator_run'
 
 ['arch == mips', {
 
@@ -948,13 +953,13 @@
   'js1_5/GC/regress-203278-2': [PASS, SLOW, NO_VARIANTS],
 }],  # 'arch == mips'
 
-['arch == arm and simulator_run == True', {
+['arch == arm and simulator_run', {
 
   #BUG(3837): Crashes due to C stack overflow.
   'js1_5/extensions/regress-355497': [SKIP],
-}],  # 'arch == arm and simulator_run == True'
+}],  # 'arch == arm and simulator_run'
 
-['arch == arm64 and simulator_run == True', {
+['arch == arm64 and simulator_run', {
 
   'js1_5/GC/regress-203278-2': [SKIP],
 
@@ -976,7 +981,7 @@
 
   #BUG(3152): Avoid C stack overflow.
   'js1_5/extensions/regress-355497': [FAIL_OK, 'Flags: --sim-stack-size=512'],
-}],  # 'arch == arm64 and simulator_run == True'
+}],  # 'arch == arm64 and simulator_run'
 
 ['variant == wasm_traps', {
   '*': [SKIP],

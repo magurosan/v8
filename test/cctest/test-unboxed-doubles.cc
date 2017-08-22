@@ -609,8 +609,7 @@ TEST(LayoutDescriptorCreateNewSlow) {
     layout_desc->set_map_word(
         MapWord::FromForwardingAddress(*layout_descriptor_copy));
     CHECK(layout_desc->map_word().IsForwardingAddress());
-    CHECK_EQ(*layout_descriptor_copy,
-             LayoutDescriptor::cast_gc_safe(layout_desc));
+    CHECK_EQ(layout_desc, LayoutDescriptor::cast_gc_safe(layout_desc));
 
     // Restore it back.
     layout_desc->set_map_word(map_word);
@@ -911,6 +910,7 @@ TEST(LayoutDescriptorAppendIfFastOrUseFullAllDoubles) {
 
 
 TEST(Regress436816) {
+  ManualGCScope manual_gc_scope;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   Factory* factory = isolate->factory();
@@ -960,6 +960,7 @@ TEST(Regress436816) {
 
 
 TEST(DescriptorArrayTrimming) {
+  ManualGCScope manual_gc_scope;
   CcTest::InitializeVM();
   v8::HandleScope scope(CcTest::isolate());
   Isolate* isolate = CcTest::i_isolate();
@@ -1085,7 +1086,7 @@ TEST(DoScavenge) {
   CcTest::CollectGarbage(i::NEW_SPACE);
 
   // Create temp object in the new space.
-  Handle<JSArray> temp = factory->NewJSArray(0, FAST_ELEMENTS);
+  Handle<JSArray> temp = factory->NewJSArray(0, PACKED_ELEMENTS);
   CHECK(isolate->heap()->new_space()->Contains(*temp));
 
   // Construct a double value that looks like a pointer to the new space object
@@ -1139,7 +1140,7 @@ TEST(DoScavengeWithIncrementalWriteBarrier) {
     AlwaysAllocateScope always_allocate(isolate);
     // Make sure |obj_value| is placed on an old-space evacuation candidate.
     heap::SimulateFullSpace(old_space);
-    obj_value = factory->NewJSArray(32 * KB, FAST_HOLEY_ELEMENTS, TENURED);
+    obj_value = factory->NewJSArray(32 * KB, HOLEY_ELEMENTS, TENURED);
     ec_page = Page::FromAddress(obj_value->address());
   }
 
@@ -1483,7 +1484,7 @@ static void TestIncrementalWriteBarrier(Handle<Map> map, Handle<Map> new_map,
 
     // Make sure |obj_value| is placed on an old-space evacuation candidate.
     heap::SimulateFullSpace(old_space);
-    obj_value = factory->NewJSArray(32 * KB, FAST_HOLEY_ELEMENTS, TENURED);
+    obj_value = factory->NewJSArray(32 * KB, HOLEY_ELEMENTS, TENURED);
     ec_page = Page::FromAddress(obj_value->address());
     CHECK_NE(ec_page, Page::FromAddress(obj->address()));
   }

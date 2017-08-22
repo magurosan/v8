@@ -9,6 +9,7 @@
 #include "src/compiler/operator.h"
 #include "src/compiler/types.h"
 #include "src/objects/map.h"
+#include "src/objects/name.h"
 
 namespace v8 {
 namespace internal {
@@ -347,6 +348,55 @@ ElementsTransition const& ElementsTransitionOf(const Operator* op) {
   return OpParameter<ElementsTransition>(op);
 }
 
+namespace {
+
+// Parameters for the TransitionAndStoreElement opcode.
+class TransitionAndStoreElementParameters final {
+ public:
+  TransitionAndStoreElementParameters(Handle<Map> double_map,
+                                      Handle<Map> fast_map);
+
+  Handle<Map> double_map() const { return double_map_; }
+  Handle<Map> fast_map() const { return fast_map_; }
+
+ private:
+  Handle<Map> const double_map_;
+  Handle<Map> const fast_map_;
+};
+
+TransitionAndStoreElementParameters::TransitionAndStoreElementParameters(
+    Handle<Map> double_map, Handle<Map> fast_map)
+    : double_map_(double_map), fast_map_(fast_map) {}
+
+bool operator==(TransitionAndStoreElementParameters const& lhs,
+                TransitionAndStoreElementParameters const& rhs) {
+  return lhs.fast_map().address() == rhs.fast_map().address() &&
+         lhs.double_map().address() == rhs.double_map().address();
+}
+
+size_t hash_value(TransitionAndStoreElementParameters parameters) {
+  return base::hash_combine(parameters.fast_map().address(),
+                            parameters.double_map().address());
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         TransitionAndStoreElementParameters parameters) {
+  return os << "fast-map" << Brief(*parameters.fast_map()) << " double-map"
+            << Brief(*parameters.double_map());
+}
+
+}  // namespace
+
+Handle<Map> DoubleMapParameterOf(const Operator* op) {
+  DCHECK(op->opcode() == IrOpcode::kTransitionAndStoreElement);
+  return OpParameter<TransitionAndStoreElementParameters>(op).double_map();
+}
+
+Handle<Map> FastMapParameterOf(const Operator* op) {
+  DCHECK(op->opcode() == IrOpcode::kTransitionAndStoreElement);
+  return OpParameter<TransitionAndStoreElementParameters>(op).fast_map();
+}
+
 std::ostream& operator<<(std::ostream& os, NumberOperationHint hint) {
   switch (hint) {
     case NumberOperationHint::kSignedSmall:
@@ -476,6 +526,8 @@ UnicodeEncoding UnicodeEncodingOf(const Operator* op) {
   V(SeqStringCharCodeAt, Operator::kNoProperties, 2, 1)          \
   V(StringFromCharCode, Operator::kNoProperties, 1, 0)           \
   V(StringIndexOf, Operator::kNoProperties, 3, 0)                \
+  V(StringToLowerCaseIntl, Operator::kNoProperties, 1, 0)        \
+  V(StringToUpperCaseIntl, Operator::kNoProperties, 1, 0)        \
   V(PlainPrimitiveToNumber, Operator::kNoProperties, 1, 0)       \
   V(PlainPrimitiveToWord32, Operator::kNoProperties, 1, 0)       \
   V(PlainPrimitiveToFloat64, Operator::kNoProperties, 1, 0)      \
@@ -494,6 +546,7 @@ UnicodeEncoding UnicodeEncodingOf(const Operator* op) {
   V(TruncateTaggedPointerToBit, Operator::kNoProperties, 1, 0)   \
   V(TruncateTaggedToWord32, Operator::kNoProperties, 1, 0)       \
   V(TruncateTaggedToFloat64, Operator::kNoProperties, 1, 0)      \
+  V(ObjectIsCallable, Operator::kNoProperties, 1, 0)             \
   V(ObjectIsDetectableCallable, Operator::kNoProperties, 1, 0)   \
   V(ObjectIsNaN, Operator::kNoProperties, 1, 0)                  \
   V(ObjectIsNonCallable, Operator::kNoProperties, 1, 0)          \
@@ -526,7 +579,6 @@ UnicodeEncoding UnicodeEncodingOf(const Operator* op) {
   V(CheckString, 1, 1)                 \
   V(CheckSeqString, 1, 1)              \
   V(CheckSymbol, 1, 1)                 \
-  V(CheckTaggedHole, 1, 0)             \
   V(CheckNotTaggedHole, 1, 1)          \
   V(CheckedInt32Add, 2, 1)             \
   V(CheckedInt32Sub, 2, 1)             \
@@ -581,6 +633,20 @@ struct SimplifiedOperatorGlobalCache final {
                    "ArrayBufferWasNeutered", 1, 1, 1, 1, 1, 0) {}
   };
   ArrayBufferWasNeuteredOperator kArrayBufferWasNeutered;
+
+  struct LookupHashStorageIndexOperator final : public Operator {
+    LookupHashStorageIndexOperator()
+        : Operator(IrOpcode::kLookupHashStorageIndex, Operator::kEliminatable,
+                   "LookupHashStorageIndex", 2, 1, 1, 1, 1, 0) {}
+  };
+  LookupHashStorageIndexOperator kLookupHashStorageIndex;
+
+  struct LoadHashMapValueOperator final : public Operator {
+    LoadHashMapValueOperator()
+        : Operator(IrOpcode::kLoadHashMapValue, Operator::kEliminatable,
+                   "LoadHashMapValue", 2, 1, 1, 1, 1, 0) {}
+  };
+  LoadHashMapValueOperator kLoadHashMapValue;
 
   struct ArgumentsFrameOperator final : public Operator {
     ArgumentsFrameOperator()
@@ -764,13 +830,11 @@ struct SimplifiedOperatorGlobalCache final {
 #undef BUFFER_ACCESS
 };
 
-
-static base::LazyInstance<SimplifiedOperatorGlobalCache>::type kCache =
-    LAZY_INSTANCE_INITIALIZER;
-
+static base::LazyInstance<SimplifiedOperatorGlobalCache>::type
+    kSimplifiedOperatorGlobalCache = LAZY_INSTANCE_INITIALIZER;
 
 SimplifiedOperatorBuilder::SimplifiedOperatorBuilder(Zone* zone)
-    : cache_(kCache.Get()), zone_(zone) {}
+    : cache_(kSimplifiedOperatorGlobalCache.Get()), zone_(zone) {}
 
 #define GET_FROM_CACHE(Name, ...) \
   const Operator* SimplifiedOperatorBuilder::Name() { return &cache_.k##Name; }
@@ -778,6 +842,8 @@ PURE_OP_LIST(GET_FROM_CACHE)
 CHECKED_OP_LIST(GET_FROM_CACHE)
 GET_FROM_CACHE(ArrayBufferWasNeutered)
 GET_FROM_CACHE(ArgumentsFrame)
+GET_FROM_CACHE(LookupHashStorageIndex)
+GET_FROM_CACHE(LoadHashMapValue)
 GET_FROM_CACHE(NewUnmappedArgumentsElements)
 #undef GET_FROM_CACHE
 
@@ -1033,6 +1099,15 @@ SPECULATIVE_NUMBER_BINOP_LIST(SPECULATIVE_NUMBER_BINOP)
   }
 ACCESS_OP_LIST(ACCESS)
 #undef ACCESS
+
+const Operator* SimplifiedOperatorBuilder::TransitionAndStoreElement(
+    Handle<Map> double_map, Handle<Map> fast_map) {
+  TransitionAndStoreElementParameters parameters(double_map, fast_map);
+  return new (zone()) Operator1<TransitionAndStoreElementParameters>(
+      IrOpcode::kTransitionAndStoreElement,
+      Operator::kNoDeopt | Operator::kNoThrow, "TransitionAndStoreElement", 3,
+      1, 1, 0, 1, 0, parameters);
+}
 
 }  // namespace compiler
 }  // namespace internal

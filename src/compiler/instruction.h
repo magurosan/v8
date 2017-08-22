@@ -15,6 +15,7 @@
 #include "src/compiler/frame.h"
 #include "src/compiler/instruction-codes.h"
 #include "src/compiler/opcodes.h"
+#include "src/double.h"
 #include "src/globals.h"
 #include "src/macro-assembler.h"
 #include "src/register-configuration.h"
@@ -479,9 +480,6 @@ class LocationOperand : public InstructionOperand {
       case MachineRepresentation::kFloat32:
       case MachineRepresentation::kFloat64:
       case MachineRepresentation::kSimd128:
-      case MachineRepresentation::kSimd1x4:
-      case MachineRepresentation::kSimd1x8:
-      case MachineRepresentation::kSimd1x16:
       case MachineRepresentation::kTaggedSigned:
       case MachineRepresentation::kTaggedPointer:
       case MachineRepresentation::kTagged:
@@ -590,9 +588,8 @@ bool InstructionOperand::IsDoubleRegister() const {
 }
 
 bool InstructionOperand::IsSimd128Register() const {
-  return IsAnyRegister() &&
-         LocationOperand::cast(this)->representation() ==
-             MachineRepresentation::kSimd128;
+  return IsAnyRegister() && LocationOperand::cast(this)->representation() ==
+                                MachineRepresentation::kSimd128;
 }
 
 bool InstructionOperand::IsAnyStackSlot() const {
@@ -906,7 +903,6 @@ class V8_EXPORT_PRIVATE Instruction final {
   bool IsTailCall() const {
     return arch_opcode() == ArchOpcode::kArchTailCallCodeObject ||
            arch_opcode() == ArchOpcode::kArchTailCallCodeObjectFromJSFunction ||
-           arch_opcode() == ArchOpcode::kArchTailCallJSFunctionFromJSFunction ||
            arch_opcode() == ArchOpcode::kArchTailCallAddress;
   }
   bool IsThrow() const {
@@ -1078,19 +1074,9 @@ class V8_EXPORT_PRIVATE Constant final {
     return bit_cast<uint32_t>(static_cast<int32_t>(value_));
   }
 
-  double ToFloat64() const {
-    // TODO(ahaas): We should remove this function. If value_ has the bit
-    // representation of a signalling NaN, then returning it as float can cause
-    // the signalling bit to flip, and value_ is returned as a quiet NaN.
-    if (type() == kInt32) return ToInt32();
+  Double ToFloat64() const {
     DCHECK_EQ(kFloat64, type());
-    return bit_cast<double>(value_);
-  }
-
-  uint64_t ToFloat64AsInt() const {
-    if (type() == kInt32) return ToInt32();
-    DCHECK_EQ(kFloat64, type());
-    return bit_cast<uint64_t>(value_);
+    return Double(bit_cast<uint64_t>(value_));
   }
 
   ExternalReference ToExternalReference() const {
@@ -1104,6 +1090,7 @@ class V8_EXPORT_PRIVATE Constant final {
   }
 
   Handle<HeapObject> ToHeapObject() const;
+  Handle<Code> ToCode() const;
 
  private:
   Type type_;
@@ -1304,8 +1291,7 @@ class FrameStateDescriptor : public ZoneObject {
            type_ == FrameStateType::kBuiltinContinuation;
   }
 
-  size_t GetSize(OutputFrameStateCombine combine =
-                     OutputFrameStateCombine::Ignore()) const;
+  size_t GetSize() const;
   size_t GetTotalSize() const;
   size_t GetFrameCount() const;
   size_t GetJSFrameCount() const;

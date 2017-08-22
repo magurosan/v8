@@ -180,12 +180,10 @@ class Utf8 {
 struct Uppercase {
   static bool Is(uchar c);
 };
-struct Lowercase {
-  static bool Is(uchar c);
-};
 struct Letter {
   static bool Is(uchar c);
 };
+#ifndef V8_INTL_SUPPORT
 struct V8_EXPORT_PRIVATE ID_Start {
   static bool Is(uchar c);
 };
@@ -195,9 +193,11 @@ struct V8_EXPORT_PRIVATE ID_Continue {
 struct V8_EXPORT_PRIVATE WhiteSpace {
   static bool Is(uchar c);
 };
+#endif  // !V8_INTL_SUPPORT
 struct V8_EXPORT_PRIVATE LineTerminator {
   static bool Is(uchar c);
 };
+#ifndef V8_INTL_SUPPORT
 struct ToLowercase {
   static const int kMaxWidth = 3;
   static const bool kIsToLower = true;
@@ -214,6 +214,7 @@ struct ToUppercase {
                      uchar* result,
                      bool* allow_caching_ptr);
 };
+#endif
 struct Ecma262Canonicalize {
   static const int kMaxWidth = 1;
   static int Convert(uchar c,

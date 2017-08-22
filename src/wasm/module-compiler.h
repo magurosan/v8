@@ -27,8 +27,7 @@ class ModuleCompiler {
   // In {CompileToModuleObject}, it will transfer ownership to the generated
   // {WasmModuleWrapper}. If this method is not called, ownership may be
   // reclaimed by explicitely releasing the {module_} field.
-  ModuleCompiler(Isolate* isolate, std::unique_ptr<WasmModule> module,
-                 bool is_sync);
+  ModuleCompiler(Isolate* isolate, std::unique_ptr<WasmModule> module);
 
   // The actual runnable task that performs compilations in the background.
   class CompilationTask : public CancelableTask {
@@ -39,10 +38,49 @@ class ModuleCompiler {
     void RunInternal() override;
   };
 
+  // The CompilationUnitBuilder builds compilation units and stores them in an
+  // internal buffer. The buffer is moved into the working queue of the
+  // ModuleCompiler when {Commit} is called.
+  class CompilationUnitBuilder {
+   public:
+    explicit CompilationUnitBuilder(ModuleCompiler* compiler)
+        : compiler_(compiler) {}
+
+    ~CompilationUnitBuilder() { DCHECK(units_.empty()); }
+
+    void AddUnit(const ModuleEnv* module_env, const WasmFunction* function,
+                 uint32_t buffer_offset, Vector<const uint8_t> bytes,
+                 WasmName name) {
+      units_.emplace_back(new compiler::WasmCompilationUnit(
+          compiler_->isolate_, module_env,
+          wasm::FunctionBody{function->sig, buffer_offset, bytes.begin(),
+                             bytes.end()},
+          name, function->func_index, compiler_->centry_stub_,
+          compiler_->async_counters()));
+    }
+
+    void Commit() {
+      {
+        base::LockGuard<base::Mutex> guard(
+            &compiler_->compilation_units_mutex_);
+        compiler_->compilation_units_.insert(
+            compiler_->compilation_units_.end(),
+            std::make_move_iterator(units_.begin()),
+            std::make_move_iterator(units_.end()));
+      }
+      units_.clear();
+    }
+
+   private:
+    ModuleCompiler* compiler_;
+    std::vector<std::unique_ptr<compiler::WasmCompilationUnit>> units_;
+  };
+
   class CodeGenerationSchedule {
    public:
     explicit CodeGenerationSchedule(
-        base::RandomNumberGenerator* random_number_generator);
+        base::RandomNumberGenerator* random_number_generator,
+        size_t max_memory = 0);
 
     void Schedule(std::unique_ptr<compiler::WasmCompilationUnit>&& item);
 
@@ -50,78 +88,107 @@ class ModuleCompiler {
 
     std::unique_ptr<compiler::WasmCompilationUnit> GetNext();
 
+    bool CanAcceptWork() const;
+
+    bool ShouldIncreaseWorkload() const;
+
+    void EnableThrottling() { throttle_ = true; }
+
    private:
     size_t GetRandomIndexInSchedule();
 
     base::RandomNumberGenerator* random_number_generator_ = nullptr;
     std::vector<std::unique_ptr<compiler::WasmCompilationUnit>> schedule_;
+    const size_t max_memory_;
+    bool throttle_ = false;
+    base::AtomicNumber<size_t> allocated_memory_{0};
   };
 
-  Isolate* isolate_;
-  std::unique_ptr<WasmModule> module_;
-  std::shared_ptr<Counters> counters_shared_;
-  Counters* counters_;
-  bool is_sync_;
-  std::vector<std::unique_ptr<compiler::WasmCompilationUnit>>
-      compilation_units_;
-  CodeGenerationSchedule executed_units_;
-  base::Mutex result_mutex_;
-  base::AtomicNumber<size_t> next_unit_;
-  size_t num_background_tasks_ = 0;
-  // This flag should only be set while holding result_mutex_.
-  bool finisher_is_running_ = false;
+  const std::shared_ptr<Counters>& async_counters() const {
+    return async_counters_;
+  }
+  Counters* counters() const { return async_counters().get(); }
 
-  // Run by each compilation task and by the main thread. The
-  // no_finisher_callback is called within the result_mutex_ lock when no
-  // finishing task is running, i.e. when the finisher_is_running_ flag is not
-  // set.
+  // Run by each compilation task and by the main thread (i.e. in both
+  // foreground and background threads). The no_finisher_callback is called
+  // within the result_mutex_ lock when no finishing task is running, i.e. when
+  // the finisher_is_running_ flag is not set.
   bool FetchAndExecuteCompilationUnit(
-      std::function<void()> no_finisher_callback = [] {});
+      std::function<void()> no_finisher_callback = nullptr);
 
-  size_t InitializeParallelCompilation(
-      const std::vector<WasmFunction>& functions, ModuleBytesEnv& module_env);
+  void OnBackgroundTaskStopped();
 
-  void InitializeHandles();
+  void EnableThrottling() { executed_units_.EnableThrottling(); }
 
-  uint32_t* StartCompilationTasks();
+  bool CanAcceptWork() const { return executed_units_.CanAcceptWork(); }
 
-  void WaitForCompilationTasks(uint32_t* task_ids);
+  bool ShouldIncreaseWorkload() const {
+    return executed_units_.ShouldIncreaseWorkload();
+  }
 
-  void FinishCompilationUnits(std::vector<Handle<Code>>& results,
-                              ErrorThrower* thrower);
+  size_t InitializeCompilationUnits(const std::vector<WasmFunction>& functions,
+                                    const ModuleWireBytes& wire_bytes,
+                                    const ModuleEnv* module_env);
+
+  void ReopenHandlesInDeferredScope();
+
+  void RestartCompilationTasks();
+
+  size_t FinishCompilationUnits(std::vector<Handle<Code>>& results,
+                                ErrorThrower* thrower);
 
   void SetFinisherIsRunning(bool value);
 
-  Handle<Code> FinishCompilationUnit(ErrorThrower* thrower, int* func_index);
+  MaybeHandle<Code> FinishCompilationUnit(ErrorThrower* thrower,
+                                          int* func_index);
 
-  void CompileInParallel(ModuleBytesEnv* module_env,
+  void CompileInParallel(const ModuleWireBytes& wire_bytes,
+                         const ModuleEnv* module_env,
                          std::vector<Handle<Code>>& results,
                          ErrorThrower* thrower);
 
-  void CompileSequentially(ModuleBytesEnv* module_env,
+  void CompileSequentially(const ModuleWireBytes& wire_bytes,
+                           const ModuleEnv* module_env,
                            std::vector<Handle<Code>>& results,
                            ErrorThrower* thrower);
 
-  void ValidateSequentially(ModuleBytesEnv* module_env, ErrorThrower* thrower);
+  void ValidateSequentially(const ModuleWireBytes& wire_bytes,
+                            const ModuleEnv* module_env, ErrorThrower* thrower);
 
   MaybeHandle<WasmModuleObject> CompileToModuleObject(
       ErrorThrower* thrower, const ModuleWireBytes& wire_bytes,
       Handle<Script> asm_js_script,
       Vector<const byte> asm_js_offset_table_bytes);
 
+  std::unique_ptr<WasmModule> ReleaseModule() { return std::move(module_); }
+
  private:
   MaybeHandle<WasmModuleObject> CompileToModuleObjectInternal(
       ErrorThrower* thrower, const ModuleWireBytes& wire_bytes,
       Handle<Script> asm_js_script,
-      Vector<const byte> asm_js_offset_table_bytes, Factory* factory,
-      WasmInstance* temp_instance, Handle<FixedArray>* function_tables,
-      Handle<FixedArray>* signature_tables);
+      Vector<const byte> asm_js_offset_table_bytes, Factory* factory);
+
+  Isolate* isolate_;
+  std::unique_ptr<WasmModule> module_;
+  const std::shared_ptr<Counters> async_counters_;
+  std::vector<std::unique_ptr<compiler::WasmCompilationUnit>>
+      compilation_units_;
+  base::Mutex compilation_units_mutex_;
+  CodeGenerationSchedule executed_units_;
+  base::Mutex result_mutex_;
+  const size_t num_background_tasks_;
+  // This flag should only be set while holding result_mutex_.
+  bool finisher_is_running_ = false;
+  CancelableTaskManager background_task_manager_;
+  size_t stopped_compilation_tasks_ = 0;
+  base::Mutex tasks_mutex_;
+  Handle<Code> centry_stub_;
 };
 
 class JSToWasmWrapperCache {
  public:
   Handle<Code> CloneOrCompileJSToWasmWrapper(Isolate* isolate,
-                                             const wasm::WasmModule* module,
+                                             wasm::WasmModule* module,
                                              Handle<Code> wasm_code,
                                              uint32_t index);
 
@@ -156,12 +223,11 @@ class InstanceBuilder {
 
   Isolate* isolate_;
   WasmModule* const module_;
-  std::shared_ptr<Counters> counters_shared_;
-  Counters* counters_;
+  const std::shared_ptr<Counters> async_counters_;
   ErrorThrower* thrower_;
   Handle<WasmModuleObject> module_object_;
-  Handle<JSReceiver> ffi_;        // TODO(titzer): Use MaybeHandle
-  Handle<JSArrayBuffer> memory_;  // TODO(titzer): Use MaybeHandle
+  MaybeHandle<JSReceiver> ffi_;
+  MaybeHandle<JSArrayBuffer> memory_;
   Handle<JSArrayBuffer> globals_;
   Handle<WasmCompiledModule> compiled_module_;
   std::vector<TableInstance> table_instances_;
@@ -169,21 +235,24 @@ class InstanceBuilder {
   JSToWasmWrapperCache js_to_wasm_cache_;
   WeakCallbackInfo<void>::Callback instance_finalizer_callback_;
 
+  const std::shared_ptr<Counters>& async_counters() const {
+    return async_counters_;
+  }
+  Counters* counters() const { return async_counters().get(); }
+
 // Helper routines to print out errors with imports.
 #define ERROR_THROWER_WITH_MESSAGE(TYPE)                                      \
   void Report##TYPE(const char* error, uint32_t index,                        \
                     Handle<String> module_name, Handle<String> import_name) { \
-    thrower_->TYPE("Import #%d module=\"%.*s\" function=\"%.*s\" error: %s",  \
-                   index, module_name->length(),                              \
-                   module_name->ToCString().get(), import_name->length(),     \
+    thrower_->TYPE("Import #%d module=\"%s\" function=\"%s\" error: %s",      \
+                   index, module_name->ToCString().get(),                     \
                    import_name->ToCString().get(), error);                    \
   }                                                                           \
                                                                               \
   MaybeHandle<Object> Report##TYPE(const char* error, uint32_t index,         \
                                    Handle<String> module_name) {              \
-    thrower_->TYPE("Import #%d module=\"%.*s\" error: %s", index,             \
-                   module_name->length(), module_name->ToCString().get(),     \
-                   error);                                                    \
+    thrower_->TYPE("Import #%d module=\"%s\" error: %s", index,               \
+                   module_name->ToCString().get(), error);                    \
     return MaybeHandle<Object>();                                             \
   }
 
@@ -223,7 +292,7 @@ class InstanceBuilder {
   // Allocate memory for a module instance as a new JSArrayBuffer.
   Handle<JSArrayBuffer> AllocateMemory(uint32_t min_mem_pages);
 
-  bool NeedsWrappers();
+  bool NeedsWrappers() const;
 
   // Process the exports, creating wrappers for functions, tables, memories,
   // and globals.
@@ -246,9 +315,6 @@ class InstanceBuilder {
 // of the work of compilation) can be background tasks.
 // TODO(wasm): factor out common parts of this with the synchronous pipeline.
 class AsyncCompileJob {
-  // TODO(ahaas): Fix https://bugs.chromium.org/p/v8/issues/detail?id=6263 to
-  // make sure that d8 does not shut down before the AsyncCompileJob is
-  // finished.
  public:
   explicit AsyncCompileJob(Isolate* isolate, std::unique_ptr<byte[]> bytes_copy,
                            size_t length, Handle<Context> context,
@@ -259,26 +325,45 @@ class AsyncCompileJob {
   ~AsyncCompileJob();
 
  private:
+  class CompileTask;
+  class CompileStep;
+
+  // States of the AsyncCompileJob.
+  class DecodeModule;
+  class DecodeFail;
+  class PrepareAndStartCompile;
+  class ExecuteAndFinishCompilationUnits;
+  class WaitForBackgroundTasks;
+  class FinishCompilationUnits;
+  class FinishCompile;
+  class CompileWrappers;
+  class FinishModule;
+
   Isolate* isolate_;
-  std::shared_ptr<Counters> counters_shared_;
-  Counters* counters_;
+  const std::shared_ptr<Counters> async_counters_;
   std::unique_ptr<byte[]> bytes_copy_;
   ModuleWireBytes wire_bytes_;
   Handle<Context> context_;
   Handle<JSPromise> module_promise_;
   std::unique_ptr<ModuleCompiler> compiler_;
-  std::unique_ptr<ModuleBytesEnv> module_bytes_env_;
+  std::unique_ptr<ModuleEnv> module_env_;
 
-  bool failed_ = false;
   std::vector<DeferredHandles*> deferred_handles_;
   Handle<WasmModuleObject> module_object_;
-  Handle<FixedArray> function_tables_;
-  Handle<FixedArray> signature_tables_;
   Handle<WasmCompiledModule> compiled_module_;
   Handle<FixedArray> code_table_;
-  std::unique_ptr<WasmInstance> temp_instance_ = nullptr;
   size_t outstanding_units_ = 0;
-  size_t num_background_tasks_ = 0;
+  std::unique_ptr<CompileStep> step_;
+  CancelableTaskManager background_task_manager_;
+#if DEBUG
+  // Counts the number of pending foreground tasks.
+  int32_t num_pending_foreground_tasks_ = 0;
+#endif
+
+  const std::shared_ptr<Counters>& async_counters() const {
+    return async_counters_;
+  }
+  Counters* counters() const { return async_counters().get(); }
 
   void ReopenHandlesInDeferredScope();
 
@@ -289,22 +374,12 @@ class AsyncCompileJob {
   template <typename Task, typename... Args>
   void DoSync(Args&&... args);
 
+  void StartForegroundTask();
+
+  void StartBackgroundTask();
+
   template <typename Task, typename... Args>
   void DoAsync(Args&&... args);
-
-  class CompileTask;
-  class AsyncCompileTask;
-  class SyncCompileTask;
-  class DecodeModule;
-  class DecodeFail;
-  class PrepareAndStartCompile;
-  class ExecuteCompilationUnits;
-  class WaitForBackgroundTasks;
-  class FinishCompilationUnits;
-  class FailCompile;
-  class FinishCompile;
-  class CompileWrappers;
-  class FinishModule;
 };
 
 }  // namespace wasm

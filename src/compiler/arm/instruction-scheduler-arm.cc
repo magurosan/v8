@@ -212,6 +212,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArmI8x16GtU:
     case kArmI8x16GeU:
     case kArmS128Zero:
+    case kArmS128Dup:
     case kArmS128And:
     case kArmS128Or:
     case kArmS128Xor:
@@ -230,7 +231,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArmS16x8UnzipRight:
     case kArmS16x8TransposeLeft:
     case kArmS16x8TransposeRight:
-    case kArmS16x8Shuffle:
     case kArmS8x16ZipLeft:
     case kArmS8x16ZipRight:
     case kArmS8x16UnzipLeft:

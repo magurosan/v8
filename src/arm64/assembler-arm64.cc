@@ -31,9 +31,10 @@
 #include "src/arm64/assembler-arm64.h"
 
 #include "src/arm64/assembler-arm64-inl.h"
-#include "src/arm64/frames-arm64.h"
 #include "src/base/bits.h"
 #include "src/base/cpu.h"
+#include "src/code-stubs.h"
+#include "src/frame-constants.h"
 #include "src/register-configuration.h"
 
 namespace v8 {
@@ -209,7 +210,7 @@ void RelocInfo::unchecked_update_wasm_size(Isolate* isolate, uint32_t size,
 Register GetAllocatableRegisterThatIsNotOneOf(Register reg1, Register reg2,
                                               Register reg3, Register reg4) {
   CPURegList regs(reg1, reg2, reg3, reg4);
-  const RegisterConfiguration* config = RegisterConfiguration::Crankshaft();
+  const RegisterConfiguration* config = RegisterConfiguration::Default();
   for (int i = 0; i < config->num_allocatable_double_registers(); ++i) {
     int code = config->GetAllocatableDoubleCode(i);
     Register candidate = Register::from_code(code);
@@ -307,19 +308,9 @@ bool AreConsecutive(const VRegister& reg1, const VRegister& reg2,
   return true;
 }
 
-void Immediate::InitializeHandle(Handle<Object> handle) {
-  AllowDeferredHandleDereference using_raw_address;
-
-  // Verify all Objects referred by code are NOT in new space.
-  Object* obj = *handle;
-  if (obj->IsHeapObject()) {
-    value_ = reinterpret_cast<intptr_t>(handle.location());
-    rmode_ = RelocInfo::EMBEDDED_OBJECT;
-  } else {
-    STATIC_ASSERT(sizeof(intptr_t) == sizeof(int64_t));
-    value_ = reinterpret_cast<intptr_t>(obj);
-    rmode_ = RelocInfo::NONE64;
-  }
+void Immediate::InitializeHandle(Handle<HeapObject> handle) {
+  value_ = reinterpret_cast<intptr_t>(handle.address());
+  rmode_ = RelocInfo::EMBEDDED_OBJECT;
 }
 
 
@@ -333,36 +324,52 @@ bool Operand::NeedsRelocation(const Assembler* assembler) const {
   return !RelocInfo::IsNone(rmode);
 }
 
+bool ConstPool::AddSharedEntry(SharedEntryMap& entry_map, uint64_t data,
+                               int offset) {
+  auto existing = entry_map.find(data);
+  if (existing == entry_map.end()) {
+    entry_map[data] = static_cast<int>(entries_.size());
+    entries_.push_back(std::make_pair(data, std::vector<int>(1, offset)));
+    return true;
+  }
+  int index = existing->second;
+  entries_[index].second.push_back(offset);
+  return false;
+}
 
 // Constant Pool.
-void ConstPool::RecordEntry(intptr_t data,
-                            RelocInfo::Mode mode) {
+bool ConstPool::RecordEntry(intptr_t data, RelocInfo::Mode mode) {
   DCHECK(mode != RelocInfo::COMMENT && mode != RelocInfo::CONST_POOL &&
          mode != RelocInfo::VENEER_POOL &&
          mode != RelocInfo::CODE_AGE_SEQUENCE &&
          mode != RelocInfo::DEOPT_SCRIPT_OFFSET &&
          mode != RelocInfo::DEOPT_INLINING_ID &&
          mode != RelocInfo::DEOPT_REASON && mode != RelocInfo::DEOPT_ID);
+
+  bool write_reloc_info = true;
+
   uint64_t raw_data = static_cast<uint64_t>(data);
   int offset = assm_->pc_offset();
   if (IsEmpty()) {
     first_use_ = offset;
   }
 
-  std::pair<uint64_t, int> entry = std::make_pair(raw_data, offset);
   if (CanBeShared(mode)) {
-    shared_entries_.insert(entry);
-    if (shared_entries_.count(entry.first) == 1) {
-      shared_entries_count++;
-    }
+    write_reloc_info = AddSharedEntry(shared_entries_, raw_data, offset);
+  } else if (mode == RelocInfo::CODE_TARGET &&
+             assm_->IsCodeTargetSharingAllowed() && raw_data != 0) {
+    // A zero data value is a placeholder and must not be shared.
+    write_reloc_info = AddSharedEntry(handle_to_index_map_, raw_data, offset);
   } else {
-    unique_entries_.push_back(entry);
+    entries_.push_back(std::make_pair(raw_data, std::vector<int>(1, offset)));
   }
 
   if (EntryCount() > Assembler::kApproxMaxPoolEntryCount) {
     // Request constant pool emission after the next instruction.
     assm_->SetNextConstPoolCheckIn(1);
   }
+
+  return write_reloc_info;
 }
 
 
@@ -471,8 +478,8 @@ void ConstPool::Emit(bool require_jump) {
 
 void ConstPool::Clear() {
   shared_entries_.clear();
-  shared_entries_count = 0;
-  unique_entries_.clear();
+  handle_to_index_map_.clear();
+  entries_.clear();
   first_use_ = -1;
 }
 
@@ -482,8 +489,7 @@ bool ConstPool::CanBeShared(RelocInfo::Mode mode) {
   DCHECK(mode != RelocInfo::NONE32);
 
   return RelocInfo::IsNone(mode) ||
-         (!assm_->serializer_enabled() &&
-          (mode >= RelocInfo::FIRST_SHAREABLE_RELOC_MODE));
+         (mode >= RelocInfo::FIRST_SHAREABLE_RELOC_MODE);
 }
 
 
@@ -541,43 +547,19 @@ void ConstPool::EmitGuard() {
 void ConstPool::EmitEntries() {
   DCHECK(IsAligned(assm_->pc_offset(), 8));
 
-  typedef std::multimap<uint64_t, int>::const_iterator SharedEntriesIterator;
-  SharedEntriesIterator value_it;
-  // Iterate through the keys (constant pool values).
-  for (value_it = shared_entries_.begin();
-       value_it != shared_entries_.end();
-       value_it = shared_entries_.upper_bound(value_it->first)) {
-    std::pair<SharedEntriesIterator, SharedEntriesIterator> range;
-    uint64_t data = value_it->first;
-    range = shared_entries_.equal_range(data);
-    SharedEntriesIterator offset_it;
-    // Iterate through the offsets of a given key.
-    for (offset_it = range.first; offset_it != range.second; offset_it++) {
-      Instruction* instr = assm_->InstructionAt(offset_it->second);
+  // Emit entries.
+  for (const auto& entry : entries_) {
+    for (const auto& pc : entry.second) {
+      Instruction* instr = assm_->InstructionAt(pc);
 
       // Instruction to patch must be 'ldr rd, [pc, #offset]' with offset == 0.
       DCHECK(instr->IsLdrLiteral() && instr->ImmLLiteral() == 0);
       instr->SetImmPCOffsetTarget(assm_->isolate_data(), assm_->pc());
     }
-    assm_->dc64(data);
-  }
-  shared_entries_.clear();
-  shared_entries_count = 0;
 
-  // Emit unique entries.
-  std::vector<std::pair<uint64_t, int> >::const_iterator unique_it;
-  for (unique_it = unique_entries_.begin();
-       unique_it != unique_entries_.end();
-       unique_it++) {
-    Instruction* instr = assm_->InstructionAt(unique_it->second);
-
-    // Instruction to patch must be 'ldr rd, [pc, #offset]' with offset == 0.
-    DCHECK(instr->IsLdrLiteral() && instr->ImmLLiteral() == 0);
-    instr->SetImmPCOffsetTarget(assm_->isolate_data(), assm_->pc());
-    assm_->dc64(unique_it->first);
+    assm_->dc64(entry.first);
   }
-  unique_entries_.clear();
-  first_use_ = -1;
+  Clear();
 }
 
 
@@ -585,26 +567,28 @@ void ConstPool::EmitEntries() {
 Assembler::Assembler(IsolateData isolate_data, void* buffer, int buffer_size)
     : AssemblerBase(isolate_data, buffer, buffer_size),
       constpool_(this),
-      recorded_ast_id_(TypeFeedbackId::None()),
       unresolved_branches_() {
   const_pool_blocked_nesting_ = 0;
   veneer_pool_blocked_nesting_ = 0;
+  code_target_sharing_blocked_nesting_ = 0;
   Reset();
 }
 
 
 Assembler::~Assembler() {
   DCHECK(constpool_.IsEmpty());
-  DCHECK(const_pool_blocked_nesting_ == 0);
-  DCHECK(veneer_pool_blocked_nesting_ == 0);
+  DCHECK_EQ(const_pool_blocked_nesting_, 0);
+  DCHECK_EQ(veneer_pool_blocked_nesting_, 0);
+  DCHECK_EQ(code_target_sharing_blocked_nesting_, 0);
 }
 
 
 void Assembler::Reset() {
 #ifdef DEBUG
   DCHECK((pc_ >= buffer_) && (pc_ < buffer_ + buffer_size_));
-  DCHECK(const_pool_blocked_nesting_ == 0);
-  DCHECK(veneer_pool_blocked_nesting_ == 0);
+  DCHECK_EQ(const_pool_blocked_nesting_, 0);
+  DCHECK_EQ(veneer_pool_blocked_nesting_, 0);
+  DCHECK_EQ(code_target_sharing_blocked_nesting_, 0);
   DCHECK(unresolved_branches_.empty());
   memset(buffer_, 0, pc_ - buffer_);
 #endif
@@ -615,12 +599,24 @@ void Assembler::Reset() {
   next_constant_pool_check_ = 0;
   next_veneer_pool_check_ = kMaxInt;
   no_const_pool_before_ = 0;
-  ClearRecordedAstId();
 }
 
-void Assembler::set_heap_number(Handle<HeapObject> number, Address pc) {
-  Memory::Address_at(target_pointer_address_at(pc)) =
-      reinterpret_cast<Address>(number.location());
+void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
+  for (auto& request : heap_object_requests_) {
+    Handle<HeapObject> object;
+    switch (request.kind()) {
+      case HeapObjectRequest::kHeapNumber:
+        object = isolate->factory()->NewHeapNumber(request.heap_number(),
+                                                   IMMUTABLE, TENURED);
+        break;
+      case HeapObjectRequest::kCodeStub:
+        request.code_stub()->set_isolate(isolate);
+        object = request.code_stub()->GetCode();
+        break;
+    }
+    Address pc = buffer_ + request.offset();
+    Memory::Address_at(target_pointer_address_at(pc)) = object.address();
+  }
 }
 
 void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
@@ -628,7 +624,7 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
   CheckConstPool(true, false);
   DCHECK(constpool_.IsEmpty());
 
-  AllocateRequestedHeapNumbers(isolate);
+  AllocateAndInstallRequestedHeapObjects(isolate);
 
   // Set up code descriptor.
   if (desc) {
@@ -647,7 +643,7 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
 
 
 void Assembler::Align(int m) {
-  DCHECK(m >= 4 && base::bits::IsPowerOfTwo32(m));
+  DCHECK(m >= 4 && base::bits::IsPowerOfTwo(m));
   while ((pc_offset() & (m - 1)) != 0) {
     nop();
   }
@@ -1718,20 +1714,28 @@ void Assembler::ldr_pcrel(const CPURegister& rt, int imm19) {
   Emit(LoadLiteralOpFor(rt) | ImmLLiteral(imm19) | Rt(rt));
 }
 
-Operand Operand::EmbeddedNumber(double value) {
+Operand Operand::EmbeddedNumber(double number) {
   int32_t smi;
-  if (DoubleToSmiInteger(value, &smi)) {
+  if (DoubleToSmiInteger(number, &smi)) {
     return Operand(Immediate(Smi::FromInt(smi)));
   }
-  Operand result(bit_cast<int64_t>(value), RelocInfo::EMBEDDED_OBJECT);
-  result.is_heap_number_ = true;
+  Operand result(0, RelocInfo::EMBEDDED_OBJECT);
+  result.heap_object_request_.emplace(number);
+  DCHECK(result.IsHeapObjectRequest());
+  return result;
+}
+
+Operand Operand::EmbeddedCode(CodeStub* stub) {
+  Operand result(0, RelocInfo::CODE_TARGET);
+  result.heap_object_request_.emplace(stub);
+  DCHECK(result.IsHeapObjectRequest());
   return result;
 }
 
 void Assembler::ldr(const CPURegister& rt, const Operand& operand) {
-  if (operand.is_heap_number()) {
-    RequestHeapNumber(operand.heap_number());
-    ldr(rt, Immediate(0, RelocInfo::EMBEDDED_OBJECT));
+  if (operand.IsHeapObjectRequest()) {
+    RequestHeapObject(operand.heap_object_request());
+    ldr(rt, operand.immediate_for_heap_object_request());
   } else {
     ldr(rt, operand.immediate());
   }
@@ -4429,6 +4433,8 @@ bool Assembler::IsImmLLiteral(int64_t offset) {
   int inst_size = static_cast<int>(kInstructionSizeLog2);
   bool offset_is_inst_multiple =
       (((offset >> inst_size) << inst_size) == offset);
+  DCHECK_GT(offset, 0);
+  offset >>= kLoadLiteralScaleLog2;
   return offset_is_inst_multiple && is_intn(offset, ImmLLiteral_width);
 }
 
@@ -4560,7 +4566,7 @@ bool Assembler::IsImmLogical(uint64_t value,
   }
 
   // If the repeat period d is not a power of two, it can't be encoded.
-  if (!IS_POWER_OF_TWO(d)) {
+  if (!base::bits::IsPowerOfTwo(d)) {
     return false;
   }
 
@@ -4709,9 +4715,7 @@ void Assembler::GrowBuffer() {
 
   // Some internal data structures overflow for very large buffers,
   // they must ensure that kMaximalBufferSize is not too large.
-  if (desc.buffer_size > kMaximalBufferSize ||
-      static_cast<size_t>(desc.buffer_size) >
-          isolate_data().max_old_generation_size_) {
+  if (desc.buffer_size > kMaximalBufferSize) {
     V8::FatalProcessOutOfMemory("Assembler::GrowBuffer");
   }
 
@@ -4758,6 +4762,8 @@ void Assembler::GrowBuffer() {
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   // We do not try to reuse pool constants.
   RelocInfo rinfo(reinterpret_cast<byte*>(pc_), rmode, data, NULL);
+  bool write_reloc_info = true;
+
   if (((rmode >= RelocInfo::COMMENT) &&
        (rmode <= RelocInfo::DEBUG_BREAK_SLOT_AT_TAIL_CALL)) ||
       (rmode == RelocInfo::INTERNAL_REFERENCE) ||
@@ -4773,27 +4779,20 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
            RelocInfo::IsConstPool(rmode) || RelocInfo::IsVeneerPool(rmode));
     // These modes do not need an entry in the constant pool.
   } else {
-    constpool_.RecordEntry(data, rmode);
+    write_reloc_info = constpool_.RecordEntry(data, rmode);
     // Make sure the constant pool is not emitted in place of the next
     // instruction for which we just recorded relocation info.
     BlockConstPoolFor(1);
   }
 
-  if (!RelocInfo::IsNone(rmode)) {
+  if (!RelocInfo::IsNone(rmode) && write_reloc_info) {
     // Don't record external references unless the heap will be serialized.
     if (rmode == RelocInfo::EXTERNAL_REFERENCE &&
         !serializer_enabled() && !emit_debug_code()) {
       return;
     }
     DCHECK(buffer_space() >= kMaxRelocSize);  // too late to grow buffer here
-    if (rmode == RelocInfo::CODE_TARGET_WITH_ID) {
-      RelocInfo reloc_info_with_ast_id(reinterpret_cast<byte*>(pc_), rmode,
-                                       RecordedAstId().ToInt(), NULL);
-      ClearRecordedAstId();
-      reloc_info_writer.Write(&reloc_info_with_ast_id);
-    } else {
-      reloc_info_writer.Write(&rinfo);
-    }
+    reloc_info_writer.Write(&rinfo);
   }
 }
 

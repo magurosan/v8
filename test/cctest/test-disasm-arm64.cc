@@ -33,6 +33,8 @@
 
 #include "src/macro-assembler.h"
 
+#include "src/frames-inl.h"
+
 #include "src/arm64/assembler-arm64.h"
 #include "src/arm64/decoder-arm64-inl.h"
 #include "src/arm64/disasm-arm64.h"
@@ -1315,6 +1317,17 @@ TEST_(load_store_unscaled) {
   COMPARE(ldrsh(x12, MemOperand(x13, -7)), "ldursh x12, [x13, #-7]");
   COMPARE(ldrsw(x14, MemOperand(x15, -8)), "ldursw x14, [x15, #-8]");
 
+  COMPARE(ldr(b0, MemOperand(x1, -1)), "ldur b0, [x1, #-1]");
+  COMPARE(ldr(h2, MemOperand(x3, -1)), "ldur h2, [x3, #-1]");
+  COMPARE(ldr(s4, MemOperand(x5, 255)), "ldur s4, [x5, #255]");
+  COMPARE(ldr(d6, MemOperand(x7, -256)), "ldur d6, [x7, #-256]");
+  COMPARE(ldr(q8, MemOperand(x9, 1)), "ldur q8, [x9, #1]");
+  COMPARE(str(b16, MemOperand(x17, -1)), "stur b16, [x17, #-1]");
+  COMPARE(str(h18, MemOperand(x19, -1)), "stur h18, [x19, #-1]");
+  COMPARE(str(s20, MemOperand(x21, 255)), "stur s20, [x21, #255]");
+  COMPARE(str(d22, MemOperand(x23, -256)), "stur d22, [x23, #-256]");
+  COMPARE(str(q24, MemOperand(x25, 1)), "stur q24, [x25, #1]");
+
   CLEANUP();
 }
 
@@ -1483,18 +1496,20 @@ TEST_(load_store_acquire_release) {
   CLEANUP();
 }
 
-#if 0  // TODO(all): enable.
 TEST_(load_literal) {
   SET_UP_ASM();
 
-  COMPARE_PREFIX(ldr(x10, 0x1234567890abcdefUL),  "ldr x10, pc+8");
-  COMPARE_PREFIX(ldr(w20, 0xfedcba09),  "ldr w20, pc+8");
-  COMPARE_PREFIX(ldr(d11, 1.234),  "ldr d11, pc+8");
-  COMPARE_PREFIX(ldr(s22, 2.5f),  "ldr s22, pc+8");
+  COMPARE_PREFIX(ldr_pcrel(x10, 0), "ldr x10, pc+0");
+  COMPARE_PREFIX(ldr_pcrel(x10, 1), "ldr x10, pc+4");
+  COMPARE_PREFIX(ldr_pcrel(d11, 0), "ldr d11, pc+0");
+  COMPARE_PREFIX(ldr_pcrel(d11, 1), "ldr d11, pc+4");
+
+  int max_offset = (kMaxLoadLiteralRange >> kLoadLiteralScaleLog2) - 1;
+  COMPARE_PREFIX(ldr_pcrel(x0, max_offset), "ldr x0, pc+1048572");
+  COMPARE_PREFIX(ldr_pcrel(d0, max_offset), "ldr d0, pc+1048572");
 
   CLEANUP();
 }
-#endif
 
 TEST_(cond_select) {
   SET_UP_ASM();
@@ -1867,13 +1882,19 @@ TEST_(debug) {
 
   // All debug codes should produce the same instruction, and the debug code
   // can be any uint32_t.
-  COMPARE(debug("message", 0, BREAK), "hlt #0xdeb0");
-  COMPARE(debug("message", 1, BREAK), "hlt #0xdeb0");
-  COMPARE(debug("message", 0xffff, BREAK), "hlt #0xdeb0");
-  COMPARE(debug("message", 0x10000, BREAK), "hlt #0xdeb0");
-  COMPARE(debug("message", 0x7fffffff, BREAK), "hlt #0xdeb0");
-  COMPARE(debug("message", 0x80000000u, BREAK), "hlt #0xdeb0");
-  COMPARE(debug("message", 0xffffffffu, BREAK), "hlt #0xdeb0");
+#ifdef USE_SIMULATOR
+  const char* expected_instruction = "hlt #0xdeb0";
+#else
+  const char* expected_instruction = "brk #0x0";
+#endif
+
+  COMPARE(debug("message", 0, BREAK), expected_instruction);
+  COMPARE(debug("message", 1, BREAK), expected_instruction);
+  COMPARE(debug("message", 0xffff, BREAK), expected_instruction);
+  COMPARE(debug("message", 0x10000, BREAK), expected_instruction);
+  COMPARE(debug("message", 0x7fffffff, BREAK), expected_instruction);
+  COMPARE(debug("message", 0x80000000u, BREAK), expected_instruction);
+  COMPARE(debug("message", 0xffffffffu, BREAK), expected_instruction);
 
   CLEANUP();
 }

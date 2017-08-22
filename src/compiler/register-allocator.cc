@@ -88,10 +88,6 @@ int GetByteWidth(MachineRepresentation rep) {
       return kDoubleSize;
     case MachineRepresentation::kSimd128:
       return kSimd128Size;
-    case MachineRepresentation::kSimd1x4:
-    case MachineRepresentation::kSimd1x8:
-    case MachineRepresentation::kSimd1x16:
-      return kSimdMaskRegisters ? kPointerSize : kSimd128Size;
     case MachineRepresentation::kNone:
       break;
   }
@@ -818,7 +814,7 @@ void LiveRange::Print(const RegisterConfiguration* config,
 
 
 void LiveRange::Print(bool with_children) const {
-  Print(RegisterConfiguration::Turbofan(), with_children);
+  Print(RegisterConfiguration::Default(), with_children);
 }
 
 
@@ -2238,7 +2234,7 @@ void LiveRangeBuilder::ProcessPhis(const InstructionBlock* block,
     // block.
     int phi_vreg = phi->virtual_register();
     live->Remove(phi_vreg);
-    // Select a hint from a predecessor block that preceeds this block in the
+    // Select a hint from a predecessor block that precedes this block in the
     // rpo order. In order of priority:
     // - Avoid hints from deferred blocks.
     // - Prefer hints from allocated (or explicit) operands.
@@ -4017,6 +4013,7 @@ void LiveRangeConnector::CommitSpillsInDeferredBlocks(
   }
 }
 
+#undef TRACE
 
 }  // namespace compiler
 }  // namespace internal

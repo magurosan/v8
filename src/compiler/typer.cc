@@ -73,6 +73,8 @@ class Typer::Visitor : public Reducer {
         induction_vars_(induction_vars),
         weakened_nodes_(typer->zone()) {}
 
+  const char* reducer_name() const override { return "Typer"; }
+
   Reduction Reduce(Node* node) override {
     if (node->op()->ValueOutputCount() == 0) return NoChange();
     switch (node->opcode()) {
@@ -270,7 +272,6 @@ class Typer::Visitor : public Reducer {
   static Type* ToNumber(Type*, Typer*);
   static Type* ToObject(Type*, Typer*);
   static Type* ToString(Type*, Typer*);
-  static Type* ToPrimitiveToString(Type*, Typer*);
 #define DECLARE_METHOD(Name)                \
   static Type* Name(Type* type, Typer* t) { \
     return t->operation_typer_.Name(type);  \
@@ -286,6 +287,7 @@ class Typer::Visitor : public Reducer {
   SIMPLIFIED_SPECULATIVE_NUMBER_BINOP_LIST(DECLARE_METHOD)
 #undef DECLARE_METHOD
 
+  static Type* ObjectIsCallable(Type*, Typer*);
   static Type* ObjectIsDetectableCallable(Type*, Typer*);
   static Type* ObjectIsNaN(Type*, Typer*);
   static Type* ObjectIsNonCallable(Type*, Typer*);
@@ -505,16 +507,13 @@ Type* Typer::Visitor::ToString(Type* type, Typer* t) {
   return Type::String();
 }
 
-// static
-Type* Typer::Visitor::ToPrimitiveToString(Type* type, Typer* t) {
-  // ES6 section 7.1.1 ToPrimitive( argument, "default" ) followed by
-  // ES6 section 7.1.12 ToString ( argument )
-  type = ToPrimitive(type, t);
-  if (type->Is(Type::String())) return type;
-  return Type::String();
-}
-
 // Type checks.
+
+Type* Typer::Visitor::ObjectIsCallable(Type* type, Typer* t) {
+  if (type->Is(Type::Callable())) return t->singleton_true_;
+  if (!type->Maybe(Type::Callable())) return t->singleton_false_;
+  return Type::Boolean();
+}
 
 Type* Typer::Visitor::ObjectIsDetectableCallable(Type* type, Typer* t) {
   if (type->Is(Type::DetectableCallable())) return t->singleton_true_;
@@ -833,6 +832,8 @@ Type* Typer::Visitor::TypeTypedStateValues(Node* node) {
   return Type::Internal();
 }
 
+Type* Typer::Visitor::TypeObjectId(Node* node) { UNREACHABLE(); }
+
 Type* Typer::Visitor::TypeArgumentsElementsState(Node* node) {
   return Type::Internal();
 }
@@ -1016,9 +1017,6 @@ Type* Typer::Visitor::JSShiftRightLogicalTyper(Type* lhs, Type* rhs, Typer* t) {
   return NumberShiftRightLogical(ToNumber(lhs, t), ToNumber(rhs, t), t);
 }
 
-// JS string concatenation.
-
-Type* Typer::Visitor::TypeJSStringConcat(Node* node) { return Type::String(); }
 
 // JS arithmetic operators.
 
@@ -1095,10 +1093,6 @@ Type* Typer::Visitor::TypeJSToString(Node* node) {
   return TypeUnaryOp(node, ToString);
 }
 
-Type* Typer::Visitor::TypeJSToPrimitiveToString(Node* node) {
-  return TypeUnaryOp(node, ToPrimitiveToString);
-}
-
 // JS object operators.
 
 
@@ -1139,6 +1133,9 @@ Type* Typer::Visitor::TypeJSCreateLiteralArray(Node* node) {
   return Type::Array();
 }
 
+Type* Typer::Visitor::TypeJSCreateEmptyLiteralArray(Node* node) {
+  return Type::Array();
+}
 
 Type* Typer::Visitor::TypeJSCreateLiteralObject(Node* node) {
   return Type::OtherObject();
@@ -1274,6 +1271,11 @@ Type* Typer::Visitor::TypeJSHasProperty(Node* node) { return Type::Boolean(); }
 
 // JS instanceof operator.
 
+Type* Typer::Visitor::JSHasInPrototypeChainTyper(Type* lhs, Type* rhs,
+                                                 Typer* t) {
+  return Type::Boolean();
+}
+
 Type* Typer::Visitor::JSInstanceOfTyper(Type* lhs, Type* rhs, Typer* t) {
   return Type::Boolean();
 }
@@ -1336,6 +1338,10 @@ Type* Typer::Visitor::TypeJSConstructForwardVarargs(Node* node) {
 }
 
 Type* Typer::Visitor::TypeJSConstruct(Node* node) { return Type::Receiver(); }
+
+Type* Typer::Visitor::TypeJSConstructWithArrayLike(Node* node) {
+  return Type::Receiver();
+}
 
 Type* Typer::Visitor::TypeJSConstructWithSpread(Node* node) {
   return Type::Receiver();
@@ -1471,6 +1477,8 @@ Type* Typer::Visitor::JSCallTyper(Type* fun, Typer* t) {
         case kTypedArrayKeys:
         case kTypedArrayValues:
         case kArrayIteratorNext:
+        case kMapIteratorNext:
+        case kSetIteratorNext:
           return Type::OtherObject();
 
         // Array functions.
@@ -1515,6 +1523,7 @@ Type* Typer::Visitor::JSCallTyper(Type* fun, Typer* t) {
         case kObjectCreate:
           return Type::OtherObject();
         case kObjectHasOwnProperty:
+        case kObjectIsPrototypeOf:
           return Type::Boolean();
         case kObjectToString:
           return Type::String();
@@ -1563,7 +1572,6 @@ Type* Typer::Visitor::JSCallTyper(Type* fun, Typer* t) {
         // Set functions.
         case kSetAdd:
         case kSetEntries:
-        case kSetKeys:
         case kSetValues:
           return Type::OtherObject();
         case kSetClear:
@@ -1601,6 +1609,10 @@ Type* Typer::Visitor::TypeJSCallForwardVarargs(Node* node) {
 Type* Typer::Visitor::TypeJSCall(Node* node) {
   // TODO(bmeurer): We could infer better types if we wouldn't ignore the
   // argument types for the JSCallTyper above.
+  return TypeUnaryOp(node, JSCallTyper);
+}
+
+Type* Typer::Visitor::TypeJSCallWithArrayLike(Node* node) {
   return TypeUnaryOp(node, JSCallTyper);
 }
 
@@ -1786,6 +1798,10 @@ Type* Typer::Visitor::StringFromCodePointTyper(Type* type, Typer* t) {
 
 Type* Typer::Visitor::TypeStringCharAt(Node* node) { return Type::String(); }
 
+Type* Typer::Visitor::TypeStringToLowerCaseIntl(Node* node) { UNREACHABLE(); }
+
+Type* Typer::Visitor::TypeStringToUpperCaseIntl(Node* node) { UNREACHABLE(); }
+
 Type* Typer::Visitor::TypeStringCharCodeAt(Node* node) {
   return typer_->cache_.kUint16;
 }
@@ -1936,8 +1952,16 @@ Type* Typer::Visitor::TypeStoreElement(Node* node) {
   UNREACHABLE();
 }
 
+Type* Typer::Visitor::TypeTransitionAndStoreElement(Node* node) {
+  UNREACHABLE();
+}
+
 Type* Typer::Visitor::TypeStoreTypedElement(Node* node) {
   UNREACHABLE();
+}
+
+Type* Typer::Visitor::TypeObjectIsCallable(Node* node) {
+  return TypeUnaryOp(node, ObjectIsCallable);
 }
 
 Type* Typer::Visitor::TypeObjectIsDetectableCallable(Node* node) {
@@ -1992,6 +2016,14 @@ Type* Typer::Visitor::TypeNewUnmappedArgumentsElements(Node* node) {
 
 Type* Typer::Visitor::TypeArrayBufferWasNeutered(Node* node) {
   return Type::Boolean();
+}
+
+Type* Typer::Visitor::TypeLookupHashStorageIndex(Node* node) {
+  return Type::SignedSmall();
+}
+
+Type* Typer::Visitor::TypeLoadHashMapValue(Node* node) {
+  return Type::NonInternal();
 }
 
 // Heap constants.

@@ -66,7 +66,7 @@ void AsyncFromSyncBuiltinsAssembler::ThrowIfNotAsyncFromSyncIterator(
     // Let badIteratorError be a new TypeError exception.
     Node* const error =
         MakeTypeError(MessageTemplate::kIncompatibleMethodReceiver, context,
-                      CStringConstant(method_name), object);
+                      StringConstant(method_name), object);
 
     // Perform ! Call(promiseCapability.[[Reject]], undefined,
     //                « badIteratorError »).
@@ -237,9 +237,8 @@ TF_BUILTIN(AsyncFromSyncIteratorPrototypeReturn,
                                  Node* const promise, Label* if_exception) {
     // If return is undefined, then
     // Let iterResult be ! CreateIterResultObject(value, true)
-    Node* const iter_result =
-        CallStub(CodeFactory::CreateIterResultObject(isolate()), context, value,
-                 TrueConstant());
+    Node* const iter_result = CallBuiltin(Builtins::kCreateIterResultObject,
+                                          context, value, TrueConstant());
 
     // Perform ! Call(promiseCapability.[[Resolve]], undefined, « iterResult »).
     // IfAbruptRejectPromise(nextDone, promiseCapability).

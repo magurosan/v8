@@ -9,7 +9,6 @@
 #include "src/counters.h"
 #include "src/heap/heap.h"
 #include "src/ic/ic-inl.h"
-#include "src/type-info.h"
 
 namespace v8 {
 namespace internal {
@@ -22,8 +21,8 @@ StubCache::StubCache(Isolate* isolate, Code::Kind ic_kind)
 }
 
 void StubCache::Initialize() {
-  DCHECK(base::bits::IsPowerOfTwo32(kPrimaryTableSize));
-  DCHECK(base::bits::IsPowerOfTwo32(kSecondaryTableSize));
+  DCHECK(base::bits::IsPowerOfTwo(kPrimaryTableSize));
+  DCHECK(base::bits::IsPowerOfTwo(kSecondaryTableSize));
   Clear();
 }
 
